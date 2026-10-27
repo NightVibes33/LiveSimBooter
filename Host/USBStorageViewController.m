@@ -1,6 +1,7 @@
 #import "USBStorageViewController.h"
 #import "SharedStorage.h"
 #import "RuntimeCacheInstaller.h"
+#import "AppleRuntimeDownloader.h"
 
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import "../ProcessSupport/SpawnPlan.h"
@@ -15,6 +16,7 @@ static NSString *const LSBUSBPackageName = @"LiveSimBooter-USB-23A343";
 @property (nonatomic, assign) BOOL busy;
 @property (nonatomic, assign) BOOL importingPreparedRuntime;
 @property (nonatomic, strong) LSBRuntimeCacheInstaller *cacheInstaller;
+@property (nonatomic, strong) LSBAppleRuntimeDownloader *appleDownloader;
 @end
 
 @implementation LSBUSBStorageViewController
@@ -74,15 +76,15 @@ static NSString *const LSBUSBPackageName = @"LiveSimBooter-USB-23A343";
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { (void)tableView; return 3; }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    (void)tableView; return section == 0 ? 2 : (section == 1 ? 1 : 4);
+    (void)tableView; return section == 0 ? 2 : (section == 1 ? 2 : 4);
 }
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    (void)tableView; return section == 0 ? @"USB drive" : (section == 1 ? @"GitHub cache" : @"Prepared simulator");
+    (void)tableView; return section == 0 ? @"USB drive" : (section == 1 ? @"Download to USB" : @"Prepared simulator");
 }
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     (void)tableView;
     if (section == 0) return [NSString stringWithFormat:@"%@\n\n%@", self.status, LSBSharedStorageDiagnostic()];
-    if (section == 1) return @"Download compressed, SHA-256 verified original LiveSimBooter helper files directly to USB. "
+    if (section == 1) return @"Download the original iOS 26.0 (23A343) ARM64 Apple simulator archive DIRECTLY from Apple’s CDN. Its ~8 GB .aar is NOT a prepared or bootable RuntimeRoot; decrypting, staging and signing are still required. GitHub provides only its manifest. Separately, fetch our open-source helper files from GitHub. "
            @"They are NOT a bootable Apple simulator; iOS 26.0 (23A343) still requires appropriately obtained, prepared and signed Apple runtime components. "
            @"Install resumes already verified chunks after interruption. Temporary chunks are deleted after each helper is installed. "
            @"No full-size temporary download is stored on iPhone.";
@@ -104,9 +106,12 @@ static NSString *const LSBUSBPackageName = @"LiveSimBooter-USB-23A343";
     } else if (indexPath.section == 0) {
         cell.textLabel.text = @"Check USB connection";
         cell.detailTextLabel.text = @"Check the saved Files permission";
+    } else if (indexPath.section == 1 && indexPath.row == 0) {
+        cell.textLabel.text = @"Download original iOS 26 simulator archive";
+        cell.detailTextLabel.text = @"Apple CDN → USB · 7.99 GB · resumable byte ranges · full SHA-256";
     } else if (indexPath.section == 1) {
-        cell.textLabel.text = self.busy && self.cacheInstaller ? @"Downloading helper cache…" : @"Download LiveSimBooter helpers to USB";
-        cell.detailTextLabel.text = @"GitHub · gzip chunks · SHA-256 · resumable · no Mac required for helpers";
+        cell.textLabel.text = @"Download LiveSimBooter helpers to USB";
+        cell.detailTextLabel.text = @"GitHub · gzip chunks · SHA-256 · resumable";
     } else if (indexPath.row == 0) {
         cell.textLabel.text = @"Import prepared simulator from Files";
         cell.detailTextLabel.text = @"Select RuntimeRoot folder and copy directly to USB without first copying it to iPhone storage";
@@ -125,6 +130,47 @@ static NSString *const LSBUSBPackageName = @"LiveSimBooter-USB-23A343";
     cell.detailTextLabel.enabled = !self.busy;
     return cell;
 }
+- (void)startAppleRuntimeDownload {
+    NSError *error = nil;
+    NSURL *usb = [self selectedFolderWithError:&error];
+    if (!usb) {
+        self.status = error.localizedDescription ?: @"Choose the USB folder first.";
+        [self.tableView reloadData];
+        return;
+    }
+    __weak typeof(self) weakSelf = self;
+    UIAlertController *confirm = [UIAlertController alertControllerWithTitle:@"Download Apple's iOS 26 simulator archive?"
+        message:@"The original ARM64 iOS Simulator 26.0 build 23A343 is about 7.99 GB. Download directly from Apple's CDN to USB with resume and SHA-256 verification. Apple's .aar archive does NOT directly boot in LiveSimBooter: decrypting, staging and code signing are separate unresolved requirements. Keep this app in the foreground and the drive attached."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [confirm addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [confirm addAction:[UIAlertAction actionWithTitle:@"Download from Apple" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        (void)action;
+        __strong typeof(weakSelf) owner = weakSelf;
+        if (!owner || owner.busy) return;
+        owner.busy = YES;
+        owner.status = @"Retrieving Apple iOS 26 simulator metadata…";
+        [owner.tableView reloadData];
+        owner.appleDownloader = [[LSBAppleRuntimeDownloader alloc] initWithUSBFolder:usb
+            update:^(NSString *message) {
+                __strong typeof(weakSelf) current = weakSelf;
+                if (!current) return;
+                current.status = message;
+                [current.tableView reloadData];
+            } completion:^(NSError *downloadError) {
+                __strong typeof(weakSelf) current = weakSelf;
+                if (!current) return;
+                current.busy = NO;
+                current.appleDownloader = nil;
+                current.status = downloadError ?
+                    [NSString stringWithFormat:@"Apple archive download failed: %@",downloadError.localizedDescription] :
+                    @"Original iOS 26.0 (23A343) Apple simulator .aar downloaded and SHA-256 verified on USB. This is NOT a bootable RuntimeRoot; preparation and signing remain necessary.";
+                [current.tableView reloadData];
+            }];
+        [owner.appleDownloader start];
+    }]];
+    [self presentViewController:confirm animated:YES completion:nil];
+}
+
 - (void)startHelperDownload {
     NSError *error = nil;
     NSURL *usb = [self selectedFolderWithError:&error];
@@ -182,7 +228,7 @@ static NSString *const LSBUSBPackageName = @"LiveSimBooter-USB-23A343";
         return;
     }
     if (indexPath.section == 0) { [self refreshSelection]; return; }
-    if (indexPath.section == 1) { [self startHelperDownload]; return; }
+    if (indexPath.section == 1) { if (indexPath.row == 0) [self startAppleRuntimeDownload]; else [self startHelperDownload]; return; }
     if (indexPath.row == 0) {
         NSError *error = nil;
         NSURL *usb = [self selectedFolderWithError:&error];
