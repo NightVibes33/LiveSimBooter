@@ -1,0 +1,18 @@
+{
+  "formatVersion": 1,
+  "product": "Apple iOS Simulator",
+  "platform": "iOS Simulator",
+  "version": "26.0",
+  "build": "23A343",
+  "architecture": "arm64",
+  "source": "Apple CDN (not mirrored by LiveSimBooter)",
+  "url": "https://updates.cdn-apple.com/2025FallFCS/mobileassets/043-92741/D750A898-A5A0-4C2E-A916-9F106B55BD19/com_apple_MobileAsset_iOSSimulatorRuntime/78756498-8AB4-4E5A-986C-7AA435758657.aar",
+  "sizeBytes": 7986028446,
+  "sha256": "eabce79ea6cf3291c9ca40fc4b3b600a36e25496d8894291dd5fe5d511fd8625",
+  "cacheFile": "iOS-26.0-23A343-arm64.aar",
+  "archiveFormat": "AppleArchive (.aar), Apple runtime / encrypted distribution",
+  "state": "originalArchiveOnly",
+  "containsPreparedRuntimeRoot": false,
+  "bootableByLiveSimBooter": false,
+  "note": "This manifest never redistributes Apple simulator software. The app downloads the original unmodified .aar from Apple's server directly into a user-owned USB folder; the app cannot boot the .aar. Preparing/signed RuntimeRoot and verifying loader functionality are distinct."
+}
