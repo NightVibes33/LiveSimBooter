@@ -128,6 +128,36 @@ LiveSimBooter UI does **not** mean the **inner** iOS 26 guest booted. The test
 intentionally does not publish a green nested-guest status until evidence
 of `launchd_sim`, guest services, and SpringBoard is captured.
 
+## Offline validation evidence (2026-10-27)
+
+GitHub Actions run [40593158533](https://github.com/NightVibes33/LiveSimBooter/actions/runs/40593158533)
+provisioned Apple's authentic 26.0/23A343 runtime on an Xcode-27 runner and built the relocated simulator cache with `Tools/setup-ios26-cache.py`. The builder's JSON and a separately computed `--check-cache` report matched:
+
+- **1,353 cached arm64 images**
+- **2,052,472,832 bytes** generated (about 2.05 GB)
+- **base `0x110000000`**
+- **SHA-256 `789d50d01b5081dc31f71f0e97a190bde7e07e11484e6dea1d83c2c7610b6ae4`**
+- `Tools/patch-ios26-cache-base.py`, `Tools/patch-ios26-platform.py` and
+  `Tools/patch-ios26-launchd-identity.py` also completed successfully against the genuine original files.
+
+This is **unsigned-cache layout verification**, not iPhone acceptance.
+The developer-specific CMS signing certificate is not installed in a public
+CI runner, and the generated unsigned Apple runtime/cache/executables are
+not uploaded to public artifacts. A SideStore-resigned host cannot
+automatically confer its entitlement or certificate upon externally
+downloaded guest executable files. Missing pieces before one-click boot:
+valid CMS guest signing, a prepared and verifiable `RuntimeRoot` installer
+for the user-owned USB filesystem, security-scope access by LiveProcess,
+kernel signature registration and `PROT_EXEC` mapping of *guest* binaries,
+plus actual launchd_sim/SpringBoard boot evidence.
+
+Settings → USB Runtime Storage → **Diagnose USB executable mapping**
+now performs a safe host-only on-device check: copy the signed host
+Mach-O to a temporary USB file, register its existing signature with
+`F_ADDFILESIGS_RETURN`, attempt a non-executing executable-page
+mapping, and erase the temporary file. **Even a success in this check
+does not prove LiveProcess's separate sandbox and signature validation**.
+
 ## Direct USB execution — not yet validated
 
 The host broker currently resolves a real App Group path in `Host/Broker.m`,
