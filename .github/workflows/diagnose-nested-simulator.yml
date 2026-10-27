@@ -72,7 +72,14 @@ jobs:
           id="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next((dev["udid"] for a in d.values() for dev in a if dev["state"] == "Shutdown" and dev["isAvailable"]), ""))')"
           test -n "$id" || { echo "No available outer simulator on runner"; exit 1; }
           xcrun simctl boot "$id"
-          xcrun simctl bootstatus "$id" -b
+          python3 - "$id" <<'PY'
+          import subprocess,sys
+          try:
+              subprocess.run(["xcrun","simctl","bootstatus",sys.argv[1],"-b"],check=True,timeout=150)
+          except subprocess.TimeoutExpired:
+              print("Outer CoreSimulator timed out after 150s; no nested guest boot proof.")
+              sys.exit(1)
+          PY
           app="$RUNNER_TEMP/nested-sim/Build/Products/Debug-iphonesimulator/LiveSimBooter.app"
           xcrun simctl install "$id" "$app"
           xcrun simctl launch "$id" com.kdt.LiveSimBooter
