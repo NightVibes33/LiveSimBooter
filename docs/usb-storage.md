@@ -18,12 +18,36 @@ checks alone.
 ## Current support
 
 Settings → USB Runtime Storage:
-1. Choose a **folder** on attached USB drive with Apple's Files document picker.
-2. Save a security-scoped bookmark. Reopen the app to resolve it and check real access.
-3. **Store prepared simulator on USB**: copy the staged App Group `RuntimeRoot` and optional
-   `SimulatorData` to `LiveSimBooter-USB-23A343/`, with staging and no overwrite.
-4. **Restore simulator from USB**: copy `RuntimeRoot` back to the App Group, without
-   overwriting an existing installation. A previously provisioned app is still required.
+1. Choose a **USB folder** in Apple's Files picker. iOS signs the current
+   host with a recognized App Group; this only confirms storage access, not
+   extension provisioning or a bootable runtime.
+2. Select **Import prepared simulator from Files** to choose an existing,
+   fully prepared `RuntimeRoot` folder, its parent, or the normal USB
+   package. The app copies it **straight from the selected Files folder to USB**,
+   not through its own App Group. The import requires at minimum nonempty
+   `usr/lib/dyld_sim`, `sbin/launchd_sim`,
+   `usr/lib/libLiveSimSpawn.dylib`, and the 23A343 signed
+   `System/Library/Caches/com.apple.dyld/dyld_sim_shared_cache_arm64`.
+   This is a structural check, **not a signature or compatibility validation**.
+3. **Store existing iPhone simulator on USB** is a *backup* action. It requires
+   a prepared `RuntimeRoot` already installed in the App Group. On fresh
+   installs that have only an IPA, the correct error is “No prepared simulator
+   is installed in the App Group”; use **Import** instead.
+4. **Check USB simulator contents** reports missing prepared files. **Restore
+   USB simulator to iPhone** copies it to the App Group before attempting a
+   guest boot, never replacing an existing local runtime.
+
+The app cannot prepare or sign Apple's original stock `.simruntime` entirely
+on the iPhone just by selecting its folder. First use the repository's pinned
+`docs/agent-setup.md` staging, patching, provisioning and signing workflow
+with legitimately obtained Apple inputs; then import that prepared output
+into USB storage.
+
+**Example of the actual error fixed in this UX:** the host App Group
+`group.com.kdt.LiveSimBooter.39A8Q3T3TR` is accessible after SideStore
+resigning, but the host has no local `RuntimeRoot`. That proves the signing
+problem is no longer the immediate blocker. It does not prove that the
+`LiveProcess` extension has the same profile or that the simulator will boot.
 
 An IPA cannot contain or transfer the Apple runtime by itself. Prepare/cache/sign the
 `23A343` simulator runtime according to `docs/agent-setup.md` before storing it.
