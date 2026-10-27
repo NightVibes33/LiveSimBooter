@@ -1,12 +1,23 @@
 #import "SharedStorage.h"
 #import "../ProcessSupport/SpawnPlan.h"
-#import <Security/Security.h>
+#import <CoreFoundation/CoreFoundation.h>
+#include <dlfcn.h>
 
 static NSArray<NSString *> *LSBSignedAppGroups(void) {
-    SecTaskRef task = SecTaskCreateFromSelf(kCFAllocatorDefault);
-    if (!task) return @[];
-    CFTypeRef value = SecTaskCopyValueForEntitlement(task, CFSTR("com.apple.security.application-groups"), NULL);
-    CFRelease(task);
+    // These Security functions exist in the system framework but are not
+    // declared by the iPhoneOS public SDK. Check symbols at runtime instead
+    // of assuming a private export is present in every iOS release.
+    typedef CFTypeRef (*CreateTask)(CFAllocatorRef);
+    typedef CFTypeRef (*CopyEntitlement)(CFTypeRef, CFStringRef, CFErrorRef *);
+    void *library = dlopen("/System/Library/Frameworks/Security.framework/Security", RTLD_LAZY | RTLD_LOCAL);
+    if (!library) return @[];
+    CreateTask create = (CreateTask)dlsym(library, "SecTaskCreateFromSelf");
+    CopyEntitlement read = (CopyEntitlement)dlsym(library, "SecTaskCopyValueForEntitlement");
+    if (!create || !read) { dlclose(library); return @[]; }
+    CFTypeRef task = create(kCFAllocatorDefault);
+    CFTypeRef value = task ? read(task, CFSTR("com.apple.security.application-groups"), NULL) : NULL;
+    if (task) CFRelease(task);
+    dlclose(library);
     if (!value) return @[];
     if (CFGetTypeID(value) != CFArrayGetTypeID()) {
         CFRelease(value);
