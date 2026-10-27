@@ -41,12 +41,13 @@ jobs:
           limited_security security import "$RUNNER_TEMP/ci.p12" -k "$keychain" -P ci-test -T /usr/bin/codesign
           limited_security security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
             -k ci-password "$keychain"
-          limited_security security add-trusted-cert -d -r trustRoot -k "$keychain" "$RUNNER_TEMP/ci.crt"
+          # security add-trusted-cert blocks on an interactive trust prompt on
+          # headless macOS runners. Do not alter system trust settings in CI.
           limited_security security list-keychains -d user -s "$keychain"
           limited_security security default-keychain -d user -s "$keychain"
           fingerprint="$(openssl x509 -in "$RUNNER_TEMP/ci.crt" -noout -fingerprint -sha1 | sed 's/^.*=//;s/://g')"
           printf '%s' "$fingerprint" > "$RUNNER_TEMP/lsb-ci-fingerprint"
-          limited_security security find-identity -v -p codesigning "$keychain"
+          limited_security security find-identity -p codesigning "$keychain"
           echo "CI certificate exists only in ephemeral runner; do NOT use for device installation."
       - name: Provision exact Apple simulator 26.0 build 23A343
         shell: bash
