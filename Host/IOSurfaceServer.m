@@ -1,10 +1,25 @@
 #import "IOSurfaceServer.h"
+#import <TargetConditionals.h>
 #import "PrivateIOSurface.h"
 #import <IOSurface/IOSurfaceRef.h>
 #include <errno.h>
 #include <stdatomic.h>
 #include <stdio.h>
 
+#if TARGET_OS_SIMULATOR
+// The private IOSurfaceRemoteServer iPhoneOS symbol is not present in
+// CoreSimulator's host libIOSurface. An outer-simulator run cannot pretend
+// to provide the nested LiveProcess IOSurface service. Fail explicitly.
+@implementation LSBIOSurfaceServer
+- (instancetype)initWithError:(int *)error {
+    if (error) *error = ENOTSUP;
+    return nil;
+}
+- (mach_port_t)registrationPort { return MACH_PORT_NULL; }
+- (pid_t)connectedClientPID { return 0; }
+- (void)close {}
+@end
+#else
 enum { LSBMaximumIOSurfacePeers = 64 };
 
 @interface LSBIOSurfaceServer () {
@@ -88,3 +103,5 @@ enum { LSBMaximumIOSurfacePeers = 64 };
 
 - (void)dealloc { [self close]; }
 @end
+
+#endif // TARGET_OS_SIMULATOR
