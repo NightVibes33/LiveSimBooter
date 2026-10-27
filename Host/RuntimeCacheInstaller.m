@@ -109,12 +109,16 @@ static BOOL LSBValidRelativePath(NSString *path) {
     }
     unsigned long long total = 0;
     NSMutableSet *paths = [NSMutableSet set];
+    // This generated cache can install only the project’s own helper tools.
+    NSSet<NSString *> *allowed = [NSSet setWithArray:@[@"usr/lib/libLiveSimSpawn.dylib",
+        @"bin/spawn-probe", @"usr/libexec/terminal-fish", @"usr/libexec/display-settings",
+        @"usr/libexec/launchctl-control", @"usr/libexec/app-registration"]];
     for (id item in files) {
         if (![item isKindOfClass:NSDictionary.class]) goto invalid;
         NSString *path = item[@"path"];
         NSArray *chunks = item[@"chunks"];
         NSNumber *size = item[@"size"];
-        if (!LSBValidRelativePath(path) || !LSBValidSHA(item[@"sha256"]) ||
+        if (!LSBValidRelativePath(path) || ![allowed containsObject:path] || !LSBValidSHA(item[@"sha256"]) ||
             ![item[@"compression"] isEqual:@"gzip"] ||
             ![size isKindOfClass:NSNumber.class] || size.unsignedLongLongValue == 0 ||
             size.unsignedLongLongValue > 1024ULL * 1024 * 1024 ||
@@ -131,6 +135,7 @@ static BOOL LSBValidRelativePath(NSString *path) {
             if (total > 1024ULL * 1024 * 1024) goto invalid;
         }
     }
+    if (paths.count != allowed.count) goto invalid;
     self.files = files;
     self.totalBytes = total;
     return YES;
@@ -209,6 +214,7 @@ invalid:
     NSDictionary *entry = self.files[self.fileIndex];
     NSURL *output = [self completedFileForEntry:entry];
     if ([self existingFileValid:output entry:entry]) {
+        for (NSDictionary *chunk in entry[@"chunks"]) [NSFileManager.defaultManager removeItemAtURL:[self chunkFileFor:chunk] error:nil];
         self.fileIndex++;
         [self nextFile];
         return;
@@ -349,6 +355,7 @@ invalid:
         NSMutableString *hex = [NSMutableString string];
         for (unsigned i=0;i<sizeof(digest);++i) [hex appendFormat:@"%02x", digest[i]];
         if (!error && ![hex isEqualToString:entry[@"sha256"]]) error = LSBCacheError(@"Uncompressed SHA-256 mismatch. The helper is not installed.");
+        if (!error && [fm fileExistsAtPath:destination.path] && ![fm removeItemAtURL:destination error:&error]) {}
         if (!error && ![fm moveItemAtURL:partial toURL:destination error:&error]) {}
         if (error) {
             [fm removeItemAtURL:partial error:nil];
