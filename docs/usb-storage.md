@@ -86,6 +86,48 @@ grant distribution rights or executable trust. A legally sourced, signed
 guest runtime and separate loader validation remain prerequisites for boot.
 Current manifest size is about 106 KB compressed / 505 KB uncompressed.
 
+## Original Apple iOS 26 simulator download to user-owned USB
+
+The app now has a **separate full-size archive downloader**:
+**Settings → USB Runtime Storage → Download original iOS 26 simulator archive**.
+
+- GitHub contains only `runtime-downloads/ios26-23A343-arm64.json`: a pinned
+  **Apple CDN HTTPS URL**, 23A343 ARM64 build metadata, exact byte count,
+  and SHA-256. The original Apple archive is **not** placed in Git, Releases,
+  Actions artifacts, LFS, or any project mirror.
+- The byte count was obtained from the Apple CDN's live HTTP Content-Range:
+  `7985954816` bytes. GitHub's source-check workflow verifies 206 responses
+  and downloads no more than 1 KiB of Apple material. The whole-file checksum
+  is pinned but **not verified by that 1 KiB source probe**; the app checks
+  the full digest after download.
+- `Host/AppleRuntimeDownloader.m` fetches the original **unmodified** archive
+  directly from Apple in **8 MiB HTTP Range requests**. Each response must
+  match the exact requested Content-Range; an unbounded 200 response is
+  rejected. Bytes are written directly to the user-selected security-scoped
+  USB folder, without staging an 8GB duplicate in iPhone storage. A
+  `.partial` file is kept across restarts for byte-offset resumption.
+  On complete download, streaming SHA-256 and byte length must match before
+  the archive is atomically renamed to `iOS-26.0-23A343-arm64.aar`.
+- 23A343 is Apple's simulator runtime **archive**, in AppleArchive AEA format.
+  It is **NOT** a prepared `RuntimeRoot` directory. iOS 26 simulator
+  archives contain an encrypted Apple archive/cryptex disk image and
+  extracting them is not the same as signing or launching guest Mach-O.
+  The app has **not** implemented the decrypt/extract/cryptex-mount/re-sign
+  process, and does **not** attempt to run the raw `.aar`.
+
+### Simulator-inside-simulator validation
+
+`.github/workflows/diagnose-nested-simulator.yml` performs independent
+checks for the Apple CDN, an iOS simulator host-target build, and an attempted
+outer CoreSimulator boot/LiveSimBooter host launch. The existing host originally
+linked two symbols available on physical iOS only
+(`IOSurfaceRemoteServer` and `proc_signal_with_audittoken`). The outer
+simulator target explicitly returns `ENOTSUP` for these services rather
+than substituting fake success. A running outer simulator or visible
+LiveSimBooter UI does **not** mean the **inner** iOS 26 guest booted. The test
+intentionally does not publish a green nested-guest status until evidence
+of `launchd_sim`, guest services, and SpringBoard is captured.
+
 ## Direct USB execution — not yet validated
 
 The host broker currently resolves a real App Group path in `Host/Broker.m`,
