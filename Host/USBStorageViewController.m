@@ -1,4 +1,5 @@
 #import "USBStorageViewController.h"
+#import "SharedStorage.h"
 
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import "../ProcessSupport/SpawnPlan.h"
@@ -77,7 +78,7 @@ static NSString *const LSBUSBPackageName = @"LiveSimBooter-USB-23A343";
 }
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     (void)tableView;
-    if (section == 0) return self.status;
+    if (section == 0) return [NSString stringWithFormat:@"%@\\n\\n%@", self.status, LSBSharedStorageDiagnostic()];
     return @"Store copies the existing, signed and prepared simulator on USB. Restore copies it into the App Group before boot. "
            @"The current loader cannot execute the entire guest directly from USB; this does not eliminate the local runtime space requirement. "
            @"Keep the app open and the drive connected during each transfer. Never unplug during a copy.";
@@ -187,9 +188,9 @@ static NSString *const LSBUSBPackageName = @"LiveSimBooter-USB-23A343";
         NSFileManager *manager = NSFileManager.defaultManager;
         NSURL *usb = [self selectedFolderWithError:&error];
         BOOL scoped = usb && [usb startAccessingSecurityScopedResource];
-        NSURL *group = [manager containerURLForSecurityApplicationGroupIdentifier:@LSB_APP_GROUP];
+        NSURL *group = LSBSharedStorageContainerURL(NULL);
         if (!error && !scoped) error = [LSBUSBStorageViewController storageError:@"USB disconnected or Files permission denied."];
-        if (!error && !group) error = [LSBUSBStorageViewController storageError:@"App Group missing. Sign the app and LiveProcess with matching App Group entitlement."];
+        if (!error && !group) error = [LSBUSBStorageViewController storageError:LSBSharedStorageDiagnostic()];
         NSURL *usbPackage = [usb URLByAppendingPathComponent:LSBUSBPackageName isDirectory:YES];
         NSURL *localRoot = [group URLByAppendingPathComponent:@"RuntimeRoot" isDirectory:YES];
         NSURL *localData = [group URLByAppendingPathComponent:@"SimulatorData" isDirectory:YES];
