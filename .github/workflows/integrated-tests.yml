@@ -1,0 +1,27 @@
+name: Integrated native test suite
+on:
+  push:
+    branches:
+      - feature/usb-runtime-storage
+    paths:
+      - 'Host/**'
+      - 'Guest/**'
+      - 'LiveProcess/**'
+      - 'LiveSimBooter/**'
+      - 'ProcessSupport/**'
+      - 'Tests/**'
+      - '.github/workflows/integrated-tests.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  suite:
+    runs-on: xcode-27
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run all existing integrated tests with zero tolerated failures
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh Tests/run.sh
