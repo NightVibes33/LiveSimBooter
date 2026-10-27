@@ -1,0 +1,87 @@
+{
+  "bootable": false,
+  "contentType": "open-source-helpers",
+  "description": "LiveSimBooter authored guest helpers only; does NOT include Apple's iOS Simulator RuntimeRoot, dyld_sim, launchd_sim or dyld shared cache.",
+  "files": [
+    {
+      "chunks": [
+        {
+          "name": "cache/6c3d5269a6266d02f57764f15cb810a833ea2569c4de5b9960b87d6c1df6ce93-0000.part",
+          "sha256": "bacb718235ea2d37b30e5c5abe13fb468333dafc0c16f610473eaf1ee67a2083",
+          "size": 71929
+        }
+      ],
+      "compression": "gzip",
+      "path": "usr/lib/libLiveSimSpawn.dylib",
+      "sha256": "6c3d5269a6266d02f57764f15cb810a833ea2569c4de5b9960b87d6c1df6ce93",
+      "size": 221544
+    },
+    {
+      "chunks": [
+        {
+          "name": "cache/1beaa028a23166c455b1ff8ce6a3581c7dda58cb66cde424fe05686913b0f90a-0000.part",
+          "sha256": "2423a0049b0d9c43fc2f428c50d327b4b24d027d2da6c3989e2628c1041bc5d8",
+          "size": 6747
+        }
+      ],
+      "compression": "gzip",
+      "path": "bin/spawn-probe",
+      "sha256": "1beaa028a23166c455b1ff8ce6a3581c7dda58cb66cde424fe05686913b0f90a",
+      "size": 52088
+    },
+    {
+      "chunks": [
+        {
+          "name": "cache/727cc1e97e1b82b2e176c144a8e308c6b4c2592ede591ae9b31782dc4fcbf836-0000.part",
+          "sha256": "d795b8612e91a9d37ff6ce0a9ca24d97b7ab8b73684e6d2146d1ac33d698e59d",
+          "size": 2580
+        }
+      ],
+      "compression": "gzip",
+      "path": "usr/libexec/terminal-fish",
+      "sha256": "727cc1e97e1b82b2e176c144a8e308c6b4c2592ede591ae9b31782dc4fcbf836",
+      "size": 51056
+    },
+    {
+      "chunks": [
+        {
+          "name": "cache/bbd2d9c524d41d2b22a25748f209108aca9b479792614a2c0f75ea3d7fb98f31-0000.part",
+          "sha256": "d663e98bf30b42f767e1347a583e4faddb35e7493f1a6718953621cb686988b3",
+          "size": 8970
+        }
+      ],
+      "compression": "gzip",
+      "path": "usr/libexec/display-settings",
+      "sha256": "bbd2d9c524d41d2b22a25748f209108aca9b479792614a2c0f75ea3d7fb98f31",
+      "size": 54848
+    },
+    {
+      "chunks": [
+        {
+          "name": "cache/8b70a36df5df98e109e1be6a53fd8a2d714cb6b0e4a48de73b8a1b1715e656ab-0000.part",
+          "sha256": "5319a8a83aebd1999ad9620b0ac756e1ba9246f191501112d7eb7c3fa7f23469",
+          "size": 4525
+        }
+      ],
+      "compression": "gzip",
+      "path": "usr/libexec/launchctl-control",
+      "sha256": "8b70a36df5df98e109e1be6a53fd8a2d714cb6b0e4a48de73b8a1b1715e656ab",
+      "size": 52256
+    },
+    {
+      "chunks": [
+        {
+          "name": "cache/b61d3edd84ccf954bc22c809bd04addf4f64b8a0c9d150e4911203871302ec50-0000.part",
+          "sha256": "fd678a77df05db466d8cfd45f47f0c6f0baede2a11b0ab291f2dfa46959efdfd",
+          "size": 11736
+        }
+      ],
+      "compression": "gzip",
+      "path": "usr/libexec/app-registration",
+      "sha256": "b61d3edd84ccf954bc22c809bd04addf4f64b8a0c9d150e4911203871302ec50",
+      "size": 73312
+    }
+  ],
+  "formatVersion": 1,
+  "guestBuild": "23A343"
+}
