@@ -34,6 +34,8 @@ jobs:
           limited_security security set-keychain-settings -lut 7200 "$keychain"
           openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 1 \
             -subj "/CN=LiveSimBooter CI Only/OU=Engineering/O=LiveSimBooter/C=US" \
+            -addext 'keyUsage=critical,digitalSignature,keyCertSign,cRLSign' \
+            -addext 'basicConstraints=critical,CA:TRUE' \
             -addext 'extendedKeyUsage=codeSigning' \
             -keyout "$RUNNER_TEMP/ci.key" -out "$RUNNER_TEMP/ci.crt"
           openssl pkcs12 -export -legacy -inkey "$RUNNER_TEMP/ci.key" \
@@ -41,8 +43,11 @@ jobs:
           limited_security security import "$RUNNER_TEMP/ci.p12" -k "$keychain" -P ci-test -T /usr/bin/codesign
           limited_security security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
             -k ci-password "$keychain"
-          # security add-trusted-cert blocks on an interactive trust prompt on
-          # headless macOS runners. Do not alter system trust settings in CI.
+          # Headless runner: avoid user-domain trust UI. The ephemeral system
+          # keychain is destroyed with this runner, and the cert is removed
+          # explicitly in the cleanup step.
+          limited_security sudo -n security add-trusted-cert -d -r trustRoot \
+            -k /Library/Keychains/System.keychain "$RUNNER_TEMP/ci.crt"
           limited_security security list-keychains -d user -s "$keychain"
           limited_security security default-keychain -d user -s "$keychain"
           fingerprint="$(openssl x509 -in "$RUNNER_TEMP/ci.crt" -noout -fingerprint -sha1 | sed 's/^.*=//;s/://g')"
@@ -152,5 +157,9 @@ jobs:
         if: always()
         shell: bash
         run: |
+          if [ -f "$RUNNER_TEMP/ci.crt" ]; then
+            cert="$(openssl x509 -in "$RUNNER_TEMP/ci.crt" -noout -fingerprint -sha1 | sed 's/^.*=//;s/://g')"
+            sudo -n security delete-certificate -Z "$cert" /Library/Keychains/System.keychain || true
+          fi
           security delete-keychain "$RUNNER_TEMP/lsb-ci-signing.keychain-db" || true
           rm -f "$RUNNER_TEMP/ci.key" "$RUNNER_TEMP/ci.crt" "$RUNNER_TEMP/ci.p12" "$RUNNER_TEMP/lsb-ci-fingerprint"
