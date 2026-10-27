@@ -23,8 +23,8 @@ jobs:
           security set-keychain-settings -lut 1200 "$keychain"
           openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 1 \
             -subj "/CN=LiveSimBooter Untrusted CI Signing Test/OU=CI/O=Test/C=US" \
-            -addext 'keyUsage=critical,digitalSignature' \
-            -addext 'basicConstraints=critical,CA:FALSE' \
+            -addext 'keyUsage=critical,digitalSignature,keyCertSign,cRLSign' \
+            -addext 'basicConstraints=critical,CA:TRUE' \
             -addext 'extendedKeyUsage=codeSigning' \
             -keyout "$RUNNER_TEMP/ci.key" -out "$RUNNER_TEMP/ci.crt"
           openssl pkcs12 -export -legacy -inkey "$RUNNER_TEMP/ci.key" \
@@ -38,7 +38,7 @@ jobs:
           # passwordless sudo, available on ephemeral GitHub macOS runners.
           python3 - "$RUNNER_TEMP/ci.crt" <<'PY'
           import subprocess,sys
-          cmd=['sudo','-n','security','add-trusted-cert','-d','-r','trustAsRoot',
+          cmd=['sudo','-n','security','add-trusted-cert','-d','-r','trustRoot',
                '-k','/Library/Keychains/System.keychain',sys.argv[1]]
           print('Trusting disposable CI certificate in temporary runner',flush=True)
           subprocess.run(cmd,check=True,timeout=35)
