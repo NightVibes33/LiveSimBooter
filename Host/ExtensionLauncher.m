@@ -1,6 +1,8 @@
 #import "ExtensionLauncher.h"
 #import "Private/FoundationPrivate.h"
 #include "../ProcessSupport/PrivateXPC.h"
+#include "../ProcessSupport/SpawnPlan.h"
+#include <string.h>
 
 #include <dispatch/dispatch.h>
 #include <errno.h>
@@ -147,6 +149,18 @@ int LSBLaunchExtensionWithOptions(const char *identifier, uint64_t requestID, ui
     if (!identifier || !identifier[0] || !event || (options & ~LSB_EXTENSION_LAUNCH_GPU)) return EINVAL;
     NSString *bundleIdentifier = [NSString stringWithUTF8String:identifier];
     if (!bundleIdentifier) return EINVAL;
+    // A sideloading signer may rewrite the extension bundle identifier.
+    // Resolve the installed, host-bundled LiveProcess.appex rather than trying
+    // the source-code bundle ID after SideStore has changed it.
+    if (!strcmp(identifier, LSB_EXTENSION_IDENTIFIER)) {
+        NSURL *pluginURL = [NSBundle.mainBundle.builtInPlugInsURL URLByAppendingPathComponent:@"LiveProcess.appex" isDirectory:YES];
+        NSDictionary *info = [NSDictionary dictionaryWithContentsOfURL:[pluginURL URLByAppendingPathComponent:@"Info.plist"]];
+        NSString *actualID = info[@"CFBundleIdentifier"];
+        if ([actualID isKindOfClass:NSString.class] && actualID.length &&
+            [info[@"CFBundleExecutable"] isEqualToString:@"LiveProcess"]) {
+            bundleIdentifier = actualID;
+        }
+    }
     if (!gSessions) gSessions = [NSMutableDictionary dictionary];
     if (gSessions[@(requestID)]) return EEXIST;
 
