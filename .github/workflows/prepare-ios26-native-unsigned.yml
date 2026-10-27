@@ -1,0 +1,140 @@
+name: Prepare complete unsigned native host components
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/unsigned-ios26-ipa
+    paths:
+      - .github/workflows/prepare-ios26-native-unsigned.yml
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: xcode-27
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify compiler and available disk
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          df -h .
+          xcrun simctl runtime list || true
+
+      - name: Obtain exact Apple iOS 26.0 simulator runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Apple provides the original runtime; never substitute a newer revision.
+          xcodebuild -downloadPlatform iOS -buildVersion 23A343 -architectureVariant arm64
+          xcrun simctl runtime list
+          echo "--- installed runtime locations ---"
+          ls -ld /Library/Developer/CoreSimulator/Volumes/* || true
+
+      - name: Verify pinned runtime and build native Metal backend
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime='/Library/Developer/CoreSimulator/Volumes/iOS_23A343/Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 26.0.simruntime/Contents/Resources/RuntimeRoot'
+          if [[ ! -f "$runtime/usr/lib/dyld_sim" ]]; then
+            echo "::error::Installed 23A343 runtime not found at expected location; inspect runtime listing before modifying this path."
+            exit 1
+          fi
+          # Use the original exact build, validate all pinned input hashes.
+          mkdir -p "$RUNNER_TEMP/lsb-components"
+          python3 Tools/setup-ios26-cache.py --runtime-root "$runtime" --validate-only \
+            > "$RUNNER_TEMP/lsb-components/cache-preflight.json"
+          python3 Tools/prepare-native-metal.py --runtime-root "$runtime" \
+            --output-dir "$RUNNER_TEMP/lsb-native-metal" --self-test \
+            > "$RUNNER_TEMP/lsb-components/native-metal-validation.json"
+          sh Tools/build-spawn-shim.sh \
+            "$RUNNER_TEMP/lsb-components/libLiveSimSpawn.dylib" \
+            "$RUNNER_TEMP/lsb-components/spawn-probe"
+          sh Tools/build-terminal-fish.sh "$RUNNER_TEMP/lsb-components"
+          sh Tools/build-display-settings.sh "$RUNNER_TEMP/lsb-components"
+          sh Tools/build-launchctl-control.sh "$RUNNER_TEMP/lsb-components"
+          sh Tools/build-app-registration.sh "$RUNNER_TEMP/lsb-components"
+          cp "$RUNNER_TEMP"/lsb-native-metal/*.dylib "$RUNNER_TEMP/lsb-components/"
+          for dylib in MetalSerializer MTLSimImplementation MetalNativeProbe; do
+            test -s "$RUNNER_TEMP/lsb-components/$dylib.dylib"
+          done
+
+      - name: Build host and extension for iPhone (unsigned)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! xcodebuild -project LiveSimBooter.xcodeproj -scheme LiveSimBooter \
+            -configuration Release -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/native-build" \
+            ARCHS=arm64 CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM="" \
+            build > "$RUNNER_TEMP/native-build.log" 2>&1; then
+            tail -n 160 "$RUNNER_TEMP/native-build.log"
+            exit 1
+          fi
+
+      - name: Stage NativeMetal inside unsigned IPA and validate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/lsb-ipa/Payload"
+          ditto "$RUNNER_TEMP/native-build/Build/Products/Release-iphoneos/LiveSimBooter.app" \
+            "$RUNNER_TEMP/lsb-ipa/Payload/LiveSimBooter.app"
+          app="$RUNNER_TEMP/lsb-ipa/Payload/LiveSimBooter.app"
+          extension="$app/PlugIns/LiveProcess.appex"
+          backend="$extension/Frameworks/NativeMetal"
+          mkdir -p "$backend"
+          for lib in MetalSerializer MTLSimImplementation MetalNativeProbe; do
+            cp "$RUNNER_TEMP/lsb-components/$lib.dylib" "$backend/$lib.dylib"
+            xcrun lipo -archs "$backend/$lib.dylib" | grep -qw arm64
+          done
+          test -s "$app/LiveSimBooter"
+          test -s "$extension/LiveProcess"
+          xcrun lipo -archs "$app/LiveSimBooter" | grep -qw arm64
+          xcrun lipo -archs "$extension/LiveProcess" | grep -qw arm64
+          /usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$app/Info.plist" | grep -Fxq 26.0
+          /usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$extension/Info.plist" | grep -Fxq 26.0
+          codesign --remove-signature "$extension" 2>/dev/null || true
+          codesign --remove-signature "$app" 2>/dev/null || true
+          rm -rf "$app/_CodeSignature" "$extension/_CodeSignature"
+          rm -f "$app/embedded.mobileprovision" "$extension/embedded.mobileprovision"
+          for p in "$app" "$extension"; do
+            if codesign --verify "$p" >/dev/null 2>&1; then
+              echo "::error::Unexpected signed payload: $p"
+              exit 1
+            fi
+          done
+          (cd "$RUNNER_TEMP/lsb-ipa" && zip -q -r -X "$GITHUB_WORKSPACE/LiveSimBooter-iPhone16-iOS27-unsigned-native.ipa" Payload)
+          unzip -t "$GITHUB_WORKSPACE/LiveSimBooter-iPhone16-iOS27-unsigned-native.ipa" | tail -n 1
+          cat > "$GITHUB_WORKSPACE/IMPORTANT-READ-FIRST.txt" <<'EOF'
+          Unsigned ARM64 native iPhone host, iOS 26.0+ deployment target.
+          Contains LiveProcess.appex AND the three original-build-adapted NativeMetal dylibs.
+          Built against Apple iOS Simulator 26.0 build 23A343, for an iPhone host such as iPhone 16 / iOS 27.
+          NOT a bootable simulator yet. This IPA intentionally excludes the ~15 GB guest runtime and signed cache.
+          Apple guest runtime and signed guest programs must be installed into the app's App Group separately,
+          following docs/agent-setup.md. The IPA, extension and three dylibs must be signed with the user's
+          valid matching Apple provisioning credentials and requested capabilities before installation.
+          The CI runner has no such credentials and cannot validate a live iPhone boot.
+          EOF
+
+      - name: Publish prepared native IPA and component tools
+        uses: actions/upload-artifact@v4
+        with:
+          name: LiveSimBooter-iPhone16-iOS27-unsigned-native
+          path: |
+            LiveSimBooter-iPhone16-iOS27-unsigned-native.ipa
+            IMPORTANT-READ-FIRST.txt
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Publish guest component outputs (unsigned; requires signing)
+        uses: actions/upload-artifact@v4
+        with:
+          name: LiveSimBooter-guest-tools-unsigned
+          path: ${{ runner.temp }}/lsb-components/
+          retention-days: 14
+          if-no-files-found: error
