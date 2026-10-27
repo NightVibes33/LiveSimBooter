@@ -31,7 +31,7 @@ jobs:
           # Transfer only the first KiB. Never pull Apple's 8GB runtime into
           # GitHub artifacts, and never publish proprietary Apple binaries.
           curl --fail --silent --show-error --location --max-time 90 \
-            --range 0-1023 --output "$RUNNER_TEMP/apple-first-kb.bin" \
+            --range 0-1023 --max-filesize 2048 --output "$RUNNER_TEMP/apple-first-kb.bin" \
             --dump-header "$RUNNER_TEMP/apple-range.headers" "$url"
           python3 - "$RUNNER_TEMP/apple-range.headers" "$RUNNER_TEMP/apple-first-kb.bin" <<'PY'
           import pathlib,sys
