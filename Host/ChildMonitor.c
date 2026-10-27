@@ -1,11 +1,14 @@
 #include "ChildMonitor.h"
+#include <TargetConditionals.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/event.h>
 #include <unistd.h>
 
 // Exported by libSystem on iOS; the public iPhoneOS SDK omits libproc.h.
+#if !TARGET_OS_SIMULATOR
 extern int proc_signal_with_audittoken(audit_token_t *audittoken, int signal);
+#endif
 
 int LSBChildMonitorCreate(pid_t pid, int *descriptor) {
     if (pid <= 0 || !descriptor) return EINVAL;
@@ -45,7 +48,12 @@ int LSBChildMonitorRead(int descriptor, pid_t pid, int *waitStatus) {
 
 int LSBChildSignal(const audit_token_t *audit, int signal) {
     if (!audit) return EINVAL;
+#if TARGET_OS_SIMULATOR
+    (void)signal;
+    return ENOTSUP; // Do not signal unrelated macOS processes from outer simulator.
+#else
     audit_token_t identity = *audit;
     // libproc converts its syscall's -1/errno result into a positive errno return value.
     return proc_signal_with_audittoken(&identity, signal);
+#endif
 }
