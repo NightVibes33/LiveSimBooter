@@ -53,6 +53,39 @@ An IPA cannot contain or transfer the Apple runtime by itself. Prepare/cache/sig
 `23A343` simulator runtime according to `docs/agent-setup.md` before storing it.
 Keep the app foregrounded during transfers and safely eject USB after completion.
 
+## GitHub-hosted compressed helper cache (no Mac needed for these files)
+
+This repository now publishes **only original project-written guest helper tools**
+to the ordinary Git branch [`runtime-cache-23A343`](https://github.com/NightVibes33/LiveSimBooter/tree/runtime-cache-23A343)
+and exposes its [`manifest.json`](https://raw.githubusercontent.com/NightVibes33/LiveSimBooter/runtime-cache-23A343/manifest.json).
+No GitHub Releases are used. Six known helper paths are allowlisted in both
+the publisher and downloader; Apple simulator binaries, `dyld_sim`,
+`launchd_sim`, and dyld shared caches are **not** included.
+
+The publisher `.github/workflows/publish-helper-cache.yml` builds the
+`Guest/` helpers on an Xcode runner, gzip-compresses each independently,
+splits gzip streams into <=4 MiB Git objects, verifies SHA-256 of every
+part and each decompressed output, then pushes only the generated cache to
+a dedicated branch. There is no full Git clone on iPhone.
+
+In the app: **Settings → USB Runtime Storage → Choose USB folder →
+Download LiveSimBooter helpers to USB**. `Host/RuntimeCacheInstaller.m`
+fetches the HTTPS manifest and validated chunks serially with an ephemeral
+URLSession (no persistent device HTTP cache), decompresses each gzip file
+with bounded buffers to a USB staging directory, verifies uncompressed size
+and SHA-256, deletes consumed compressed chunks, and publishes the complete
+`LiveSimBooter-Helpers-23A343/` package without overwriting existing data.
+Incomplete files retain their verified chunks for resume; old incomplete
+output files are validated before reuse. A missing or unauthorized manifest
+fails explicitly. The final cache is **not automatically executed**.
+
+The installed helper package is **not** a prepared simulator runtime; it
+does not address the missing 15–20 GB of Apple-proprietary simulator files.
+Simply compressing, splitting, or moving Apple's binaries to Git does not
+grant distribution rights or executable trust. A legally sourced, signed
+guest runtime and separate loader validation remain prerequisites for boot.
+Current manifest size is about 106 KB compressed / 505 KB uncompressed.
+
 ## Direct USB execution — not yet validated
 
 The host broker currently resolves a real App Group path in `Host/Broker.m`,
