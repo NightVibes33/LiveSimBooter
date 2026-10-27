@@ -61,6 +61,42 @@ jobs:
           if not matched:
               raise SystemExit('iOS 26.0 23A343 did not install; no false boot success')
           PY
+      - name: Validate exact 23A343 runtime source against LiveSimBooter toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Xcode performs decryption/mounting. Check that the *actual*
+          # original RuntimeRoot agrees with the patcher's pinned hashes.
+          root="$(find /Library/Developer/CoreSimulator/Volumes -type f \
+            -path '*/RuntimeRoot/usr/lib/dyld_sim' -print -quit 2>/dev/null | sed 's,/usr/lib/dyld_sim$,,' || true)"
+          if [ -z "$root" ]; then
+            root="$(find /Library/Developer/CoreSimulator/Profiles /Library/Developer/CoreSimulator/Volumes \
+              -type f -path '*/RuntimeRoot/usr/lib/dyld_sim' -print -quit 2>/dev/null | sed 's,/usr/lib/dyld_sim$,,' || true)"
+          fi
+          test -n "$root" || { echo "::error::Official 23A343 RuntimeRoot not mounted by Xcode"; exit 1; }
+          test -f "$root/sbin/launchd_sim"
+          test -f "$root/usr/lib/dyld_sim"
+          printf 'Xcode-provisioned simulator root: %s\n' "$root"
+          python3 Tools/setup-ios26-cache.py --runtime-root "$root" --validate-only \
+            > "$RUNNER_TEMP/lsb-cache-validation.json"
+          python3 Tools/setup-ios26-runtime.py --runtime-root "$root" --dry-run \
+            --allow-missing-dependencies > "$RUNNER_TEMP/lsb-runtime-inventory.json"
+          python3 - "$RUNNER_TEMP/lsb-cache-validation.json" "$RUNNER_TEMP/lsb-runtime-inventory.json" <<'PY'
+          import json,sys
+          for path in sys.argv[1:]:
+              data=json.load(open(path))
+              print(path.split('/')[-1], 'parsed successfully;',len(data),'root fields')
+          print('23A343 original inputs validated; no code signing or device boot implied')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: iOS26-source-validation-json-only
+          path: |
+            ${{ runner.temp }}/lsb-cache-validation.json
+            ${{ runner.temp }}/lsb-runtime-inventory.json
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Boot official iOS 26 via CoreSimulator (NOT LiveSimBooter nested guest)
         shell: bash
         run: |
