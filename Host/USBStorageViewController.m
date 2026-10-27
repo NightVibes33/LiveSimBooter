@@ -2,6 +2,7 @@
 #import "SharedStorage.h"
 #import "RuntimeCacheInstaller.h"
 #import "AppleRuntimeDownloader.h"
+#import "USBExecutableProbe.h"
 
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import "../ProcessSupport/SpawnPlan.h"
@@ -76,7 +77,7 @@ static NSString *const LSBUSBPackageName = @"LiveSimBooter-USB-23A343";
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { (void)tableView; return 3; }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    (void)tableView; return section == 0 ? 2 : (section == 1 ? 2 : 4);
+    (void)tableView; return section == 0 ? 3 : (section == 1 ? 2 : 4);
 }
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
     (void)tableView; return section == 0 ? @"USB drive" : (section == 1 ? @"Download to USB" : @"Prepared simulator");
@@ -103,9 +104,12 @@ static NSString *const LSBUSBPackageName = @"LiveSimBooter-USB-23A343";
     if (indexPath.section == 0 && indexPath.row == 0) {
         cell.textLabel.text = @"Choose USB folder";
         cell.detailTextLabel.text = self.location ?: @"Not connected";
-    } else if (indexPath.section == 0) {
+    } else if (indexPath.section == 0 && indexPath.row == 1) {
         cell.textLabel.text = @"Check USB connection";
         cell.detailTextLabel.text = @"Check the saved Files permission";
+    } else if (indexPath.section == 0) {
+        cell.textLabel.text = @"Diagnose USB executable mapping";
+        cell.detailTextLabel.text = @"Physical iPhone: register the signed host executable and probe PROT_EXEC from USB, without executing code";
     } else if (indexPath.section == 1 && indexPath.row == 0) {
         cell.textLabel.text = @"Download original iOS 26 simulator archive";
         cell.detailTextLabel.text = @"Apple CDN → USB · 7.99 GB · resumable byte ranges · full SHA-256";
@@ -129,6 +133,25 @@ static NSString *const LSBUSBPackageName = @"LiveSimBooter-USB-23A343";
     cell.textLabel.enabled = !self.busy;
     cell.detailTextLabel.enabled = !self.busy;
     return cell;
+}
+- (void)diagnoseUSBExecutableMapping {
+    NSError *error = nil;
+    NSURL *usb = [self selectedFolderWithError:&error];
+    if (!usb) {
+        self.status = error.localizedDescription ?: @"Choose the USB folder first.";
+        [self.tableView reloadData]; return;
+    }
+    self.busy = YES;
+    self.status = @"Testing signed Mach-O file mapping from USB on the host; no code will be executed…";
+    [self.tableView reloadData];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSString *diagnosis = LSBProbeUSBExecutableMapping(usb);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.busy = NO;
+            self.status = diagnosis;
+            [self.tableView reloadData];
+        });
+    });
 }
 - (void)startAppleRuntimeDownload {
     NSError *error = nil;
@@ -227,7 +250,8 @@ static NSString *const LSBUSBPackageName = @"LiveSimBooter-USB-23A343";
         [self presentFolderPickerForImport:NO];
         return;
     }
-    if (indexPath.section == 0) { [self refreshSelection]; return; }
+    if (indexPath.section == 0 && indexPath.row == 1) { [self refreshSelection]; return; }
+    if (indexPath.section == 0 && indexPath.row == 2) { [self diagnoseUSBExecutableMapping]; return; }
     if (indexPath.section == 1) { if (indexPath.row == 0) [self startAppleRuntimeDownload]; else [self startHelperDownload]; return; }
     if (indexPath.row == 0) {
         NSError *error = nil;
