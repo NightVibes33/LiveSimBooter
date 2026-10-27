@@ -378,3 +378,5 @@ xcrun --sdk macosx clang -fobjc-arc -fblocks -Wall -Wextra -Werror -arch arm64 \
 xcrun --sdk macosx clang -fobjc-arc -fblocks -Wall -Wextra -Werror -arch arm64 \
     Tests/RunningBoardMonitorTests.m -framework Foundation -o "$test_directory/RunningBoardMonitor"
 "$test_directory/RunningBoardMonitor"
+
+python3 -B Tests/VerifyDeviceRuntimeTests.py
