@@ -158,6 +158,39 @@ Mach-O to a temporary USB file, register its existing signature with
 mapping, and erase the temporary file. **Even a success in this check
 does not prove LiveProcess's separate sandbox and signature validation**.
 
+## Offline device-readiness gate for a staged RuntimeRoot
+
+Run this **after** the exact 23A343 runtime has been patched, staged, and
+signed with the Apple developer signing identity used for the installed IPA:
+
+```sh
+python3 Tools/verify-device-runtime.py \
+  --runtime-root /path/to/prepared/RuntimeRoot \
+  --expected-team YOUR_APPLE_DEVELOPER_TEAM_ID \
+  --verify-macos-codesign \
+  --output /path/to/unused/preflight.json
+```
+
+It does not download or modify Apple's software. This tool independently
+checks all critical paths, refuses symlinked code and invalid ARM64 Mach-O
+types, requires embedded CMS signatures, verifies the relocated simulator
+cache's required signed format and mapping metadata, reads capabilities,
+and (with macOS `codesign`) checks certificate team compatibility. A
+nonzero exit or `offline_checks_pass: false` means **not device-test-ready**.
+The JSON always marks `device_kernel_signature_acceptance_verified`,
+`usb_extension_access_verified`, and `guest_boot_verified` **false**:
+these can be established only by actual iPhone experiments.
+
+`Tests/VerifyDeviceRuntimeTests.py` includes negative tests for missing
+runtime entries, unsigned CMS, wrong file types, malformed signature slots,
+and unsafe symlinks. It runs in the integrated `Tests/run.sh` suite.
+
+CI also attempts a disposable-certificate CMS signing smoke test in
+`.github/workflows/verify-signed-guest.yml`. A temporary self-signed CI
+certificate can test offline signing math, but it **cannot** replace a
+provisioned Apple developer signing identity, nor permit execution on a
+physical phone. Do not publish an unsigned cache as boot-ready.
+
 ## Direct USB execution — not yet validated
 
 The host broker currently resolves a real App Group path in `Host/Broker.m`,
