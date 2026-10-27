@@ -39,11 +39,33 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          runtime='/Library/Developer/CoreSimulator/Volumes/iOS_23A343/Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 26.0.simruntime/Contents/Resources/RuntimeRoot'
-          if [[ ! -f "$runtime/usr/lib/dyld_sim" ]]; then
-            echo "::error::Installed 23A343 runtime not found at expected location; inspect runtime listing before modifying this path."
-            exit 1
-          fi
+          # CoreSimulator may mount the runtime under a cryptex path rather than /Library/Developer/CoreSimulator/Volumes.
+          xcrun simctl list runtimes -j > "$RUNNER_TEMP/ios-runtimes.json"
+          runtime="$(python3 - "$RUNNER_TEMP/ios-runtimes.json" <<'PY'
+          import json
+          import pathlib
+          import sys
+          data = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          for item in data.get("runtimes", []):
+              if item.get("buildversion") != "23A343":
+                  continue
+              candidates = []
+              if item.get("runtimeRoot"):
+                  candidates.append(pathlib.Path(item["runtimeRoot"]))
+              if item.get("bundlePath"):
+                  candidates.append(pathlib.Path(item["bundlePath"]) / "Contents/Resources/RuntimeRoot")
+              for root in candidates:
+                  if (root / "usr/lib/dyld_sim").is_file():
+                      print(root)
+                      sys.exit(0)
+              print(f"Pinned runtime record found but no mounted dyld_sim: {item}", file=sys.stderr)
+              sys.exit(2)
+          print("Pinned runtime 23A343 not listed in CoreSimulator JSON", file=sys.stderr)
+          sys.exit(2)
+          PY
+          )"
+          echo "Resolved original runtime: $runtime"
+          test -f "$runtime/usr/lib/dyld_sim"
           # Use the original exact build, validate all pinned input hashes.
           mkdir -p "$RUNNER_TEMP/lsb-components"
           python3 Tools/setup-ios26-cache.py --runtime-root "$runtime" --validate-only \
