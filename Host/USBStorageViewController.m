@@ -1,5 +1,6 @@
 #import "USBStorageViewController.h"
 #import "SharedStorage.h"
+#import "RuntimeCacheInstaller.h"
 
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import "../ProcessSupport/SpawnPlan.h"
@@ -13,6 +14,7 @@ static NSString *const LSBUSBPackageName = @"LiveSimBooter-USB-23A343";
 @property (nonatomic, copy) NSString *location;
 @property (nonatomic, assign) BOOL busy;
 @property (nonatomic, assign) BOOL importingPreparedRuntime;
+@property (nonatomic, strong) LSBRuntimeCacheInstaller *cacheInstaller;
 @end
 
 @implementation LSBUSBStorageViewController
@@ -70,16 +72,20 @@ static NSString *const LSBUSBPackageName = @"LiveSimBooter-USB-23A343";
     [self.tableView reloadData];
 }
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { (void)tableView; return 2; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { (void)tableView; return 3; }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    (void)tableView; return section == 0 ? 2 : 4;
+    (void)tableView; return section == 0 ? 2 : (section == 1 ? 1 : 4);
 }
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    (void)tableView; return section == 0 ? @"USB drive" : @"Prepared simulator";
+    (void)tableView; return section == 0 ? @"USB drive" : (section == 1 ? @"GitHub cache" : @"Prepared simulator");
 }
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     (void)tableView;
     if (section == 0) return [NSString stringWithFormat:@"%@\n\n%@", self.status, LSBSharedStorageDiagnostic()];
+    if (section == 1) return @"Download compressed, SHA-256 verified original LiveSimBooter helper files directly to USB. "
+           @"They are NOT a bootable Apple simulator; iOS 26.0 (23A343) still requires appropriately obtained, prepared and signed Apple runtime components. "
+           @"Install resumes already verified chunks after interruption. Temporary chunks are deleted after each helper is installed. "
+           @"No full-size temporary download is stored on iPhone.";
     return @"First import a prepared iOS Simulator 26.0 (23A343) RuntimeRoot folder from Files, or store one already in the app. "
            @"The original Xcode .simruntime is not sufficient: dyld_sim, launchd_sim, shared cache, and guest helpers must be prepared and signed. "
            @"USB storage/backup does not enable executing guest Mach-O code directly from USB. Restore to iPhone before boot. "
@@ -98,6 +104,9 @@ static NSString *const LSBUSBPackageName = @"LiveSimBooter-USB-23A343";
     } else if (indexPath.section == 0) {
         cell.textLabel.text = @"Check USB connection";
         cell.detailTextLabel.text = @"Check the saved Files permission";
+    } else if (indexPath.section == 1) {
+        cell.textLabel.text = self.busy && self.cacheInstaller ? @"Downloading helper cache…" : @"Download LiveSimBooter helpers to USB";
+        cell.detailTextLabel.text = @"GitHub · gzip chunks · SHA-256 · resumable · no Mac required for helpers";
     } else if (indexPath.row == 0) {
         cell.textLabel.text = @"Import prepared simulator from Files";
         cell.detailTextLabel.text = @"Select RuntimeRoot folder and copy directly to USB without first copying it to iPhone storage";
@@ -116,6 +125,47 @@ static NSString *const LSBUSBPackageName = @"LiveSimBooter-USB-23A343";
     cell.detailTextLabel.enabled = !self.busy;
     return cell;
 }
+- (void)startHelperDownload {
+    NSError *error = nil;
+    NSURL *usb = [self selectedFolderWithError:&error];
+    if (!usb) {
+        self.status = error.localizedDescription ?: @"Choose a USB folder first.";
+        [self.tableView reloadData];
+        return;
+    }
+    __weak typeof(self) weakSelf = self;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Download original LiveSimBooter helpers?"
+        message:@"Downloads the open-source guest helper cache only, compressed in small reusable pieces. It cannot install or boot Apple's missing iOS 26.0 runtime. Download directly to the selected USB drive?"
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Download" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        (void)action;
+        __strong typeof(weakSelf) owner = weakSelf;
+        if (!owner || owner.busy) return;
+        owner.busy = YES;
+        owner.status = @"Connecting to GitHub helper cache…";
+        [owner.tableView reloadData];
+        owner.cacheInstaller = [[LSBRuntimeCacheInstaller alloc] initWithUSBFolder:usb
+            update:^(NSString *message) {
+                __strong typeof(weakSelf) current = weakSelf;
+                if (!current) return;
+                current.status = message;
+                [current.tableView reloadData];
+            } completion:^(NSError *cacheError) {
+                __strong typeof(weakSelf) current = weakSelf;
+                if (!current) return;
+                current.busy = NO;
+                current.cacheInstaller = nil;
+                current.status = cacheError ?
+                    [NSString stringWithFormat:@"Helper cache failed: %@", cacheError.localizedDescription] :
+                    @"LiveSimBooter helpers verified and stored on USB. These are NOT Apple's simulator and do not make the guest bootable.";
+                [current.tableView reloadData];
+            }];
+        [owner.cacheInstaller start];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
 - (void)presentFolderPickerForImport:(BOOL)importing {
     self.importingPreparedRuntime = importing;
     UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
@@ -132,6 +182,7 @@ static NSString *const LSBUSBPackageName = @"LiveSimBooter-USB-23A343";
         return;
     }
     if (indexPath.section == 0) { [self refreshSelection]; return; }
+    if (indexPath.section == 1) { [self startHelperDownload]; return; }
     if (indexPath.row == 0) {
         NSError *error = nil;
         NSURL *usb = [self selectedFolderWithError:&error];
