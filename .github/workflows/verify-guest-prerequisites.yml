@@ -1,0 +1,108 @@
+name: Validate guest bootstrap prerequisites (no device)
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/usb-runtime-storage
+    paths:
+      - '.github/workflows/verify-guest-prerequisites.yml'
+      - 'Tools/setup-ios26-cache.py'
+      - 'Tools/patch-ios26-cache-base.py'
+      - 'Tools/patch-ios26-platform.py'
+      - 'Tools/patch-ios26-launchd-identity.py'
+      - 'Tests/**'
+permissions:
+  contents: read
+jobs:
+  unit-tests:
+    runs-on: xcode-27
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run integrated native host, guest and cache tool tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh Tests/run.sh
+
+  native-cache-builder:
+    runs-on: xcode-27
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - name: Provision original Apple iOS Simulator 26.0 through Xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h "$RUNNER_TEMP"
+          mkdir -p "$RUNNER_TEMP/official"
+          xcodebuild -downloadPlatform iOS -exportPath "$RUNNER_TEMP/official" \
+            -buildVersion 26.0 -architectureVariant arm64
+          dmg="$(find "$RUNNER_TEMP/official" -maxdepth 4 -type f -name '*.dmg' -print -quit)"
+          test -n "$dmg"
+          xcodebuild -importPlatform "$dmg"
+          xcrun simctl runtime scan-and-mount
+          # The official runtime is extracted/mounted locally on runner.
+          root="$(find /Library/Developer/CoreSimulator/Volumes -type f \
+            -path '*/RuntimeRoot/usr/lib/dyld_sim' -print -quit 2>/dev/null | sed 's,/usr/lib/dyld_sim$,,' || true)"
+          test -n "$root" && test -f "$root/sbin/launchd_sim"
+          test -f "$root/../update_dyld_sim_shared_cache"
+          printf '%s\n' "$root" > "$RUNNER_TEMP/official-runtime-root.txt"
+          echo "Pinned 23A343 source mounted on runner"
+      - name: Build and independently validate relocated arm64 shared cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$(cat "$RUNNER_TEMP/official-runtime-root.txt")"
+          # Builds Apple's original inputs with the exact 23A343 layout
+          # patch. NEVER publishes the generated shared cache.
+          python3 Tools/setup-ios26-cache.py --runtime-root "$root" \
+            --output-dir "$RUNNER_TEMP/lsb-built-cache" \
+            > "$RUNNER_TEMP/cache-builder-result.json"
+          python3 Tools/setup-ios26-cache.py \
+            --check-cache "$RUNNER_TEMP/lsb-built-cache/unsigned/dyld_sim_shared_cache_arm64" \
+            > "$RUNNER_TEMP/cache-independent-check.json"
+          python3 - "$RUNNER_TEMP/cache-builder-result.json" "$RUNNER_TEMP/cache-independent-check.json" <<'PY'
+          import json,sys
+          reports=[json.load(open(p)) for p in sys.argv[1:]]
+          assert reports[0]['runtime_build']=='23A343'
+          assert reports[0]['sha256']==reports[1]['sha256']
+          assert reports[1]['images']>0
+          assert reports[1]['signature_validation']=='not_performed'
+          print('PASS: unsigned relaid-out 23A343 guest cache and independent structural validation; not iPhone-signed')
+          PY
+      - name: Patch exact stock dyld_sim and launchd_sim for LiveSimBooter
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$(cat "$RUNNER_TEMP/official-runtime-root.txt")"
+          mkdir -p "$RUNNER_TEMP/loader-base" "$RUNNER_TEMP/patched"
+          python3 Tools/patch-ios26-cache-base.py \
+            --builder "$root/../update_dyld_sim_shared_cache" \
+            --dyld-sim "$root/usr/lib/dyld_sim" \
+            --output-dir "$RUNNER_TEMP/loader-base" \
+            > "$RUNNER_TEMP/loader-base-report.json"
+          python3 Tools/patch-ios26-platform.py \
+            --source "$RUNNER_TEMP/loader-base/dyld_sim" \
+            --output "$RUNNER_TEMP/patched/dyld_sim" \
+            > "$RUNNER_TEMP/loader-patch-report.json"
+          python3 Tools/patch-ios26-launchd-identity.py \
+            --source "$root/sbin/launchd_sim" \
+            --output "$RUNNER_TEMP/patched/launchd_sim" \
+            > "$RUNNER_TEMP/launchd-patch-report.json"
+          file "$RUNNER_TEMP/patched/dyld_sim" "$RUNNER_TEMP/patched/launchd_sim"
+          echo "PASS: exact original 23A343 loader/launchd patched. Signatures deliberately invalidated; signed device boot unverified."
+      - name: Publish JSON-only verification evidence, never Apple binaries
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: iOS26-guest-cache-preflight-JSON-only
+          path: |
+            ${{ runner.temp }}/cache-builder-result.json
+            ${{ runner.temp }}/cache-independent-check.json
+            ${{ runner.temp }}/lsb-built-cache/validation.json
+            ${{ runner.temp }}/loader-base-report.json
+            ${{ runner.temp }}/loader-patch-report.json
+            ${{ runner.temp }}/launchd-patch-report.json
+          if-no-files-found: ignore
+          retention-days: 7
