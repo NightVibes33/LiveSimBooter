@@ -1,0 +1,67 @@
+name: Build unsigned iPhone host with USB storage UI
+on:
+  push:
+    branches:
+      - feature/usb-runtime-storage
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile unsigned host and extension
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          if ! xcodebuild -project LiveSimBooter.xcodeproj -scheme LiveSimBooter \
+            -configuration Release -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/usb-build" ARCHS=arm64 \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM="" build \
+            > "$RUNNER_TEMP/usb-xcodebuild.log" 2>&1; then
+            tail -n 150 "$RUNNER_TEMP/usb-xcodebuild.log"
+            exit 1
+          fi
+          tail -n 20 "$RUNNER_TEMP/usb-xcodebuild.log"
+      - name: Package and verify unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$RUNNER_TEMP/usb-build/Build/Products/Release-iphoneos/LiveSimBooter.app"
+          appex="$app/PlugIns/LiveProcess.appex"
+          test -s "$app/LiveSimBooter"
+          test -s "$appex/LiveProcess"
+          xcrun lipo -archs "$app/LiveSimBooter" | grep -qw arm64
+          xcrun lipo -archs "$appex/LiveProcess" | grep -qw arm64
+          /usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$app/Info.plist" | grep -Fxq '26.0'
+          codesign --remove-signature "$appex" 2>/dev/null || true
+          codesign --remove-signature "$app" 2>/dev/null || true
+          rm -rf "$app/_CodeSignature" "$appex/_CodeSignature"
+          rm -f "$app/embedded.mobileprovision" "$appex/embedded.mobileprovision"
+          mkdir -p "$RUNNER_TEMP/usb-package/Payload"
+          ditto "$app" "$RUNNER_TEMP/usb-package/Payload/LiveSimBooter.app"
+          (cd "$RUNNER_TEMP/usb-package" && zip -q -r -X "$GITHUB_WORKSPACE/LiveSimBooter-USB-storage-unsigned.ipa" Payload)
+          unzip -t "$GITHUB_WORKSPACE/LiveSimBooter-USB-storage-unsigned.ipa" | tail -n 1
+          cat > "$GITHUB_WORKSPACE/USB-LIMITATIONS.txt" <<'EOF'
+          USB storage: Files folder selection, bookmarked access, prepared-runtime backup,
+          and guarded restore are available in Settings.
+          External game asset loading inspired by NightVibes33/GTA-V-IOS (ios-usb-port).
+          THIS IS NOT DIRECT GUEST EXECUTION FROM USB.
+          LiveProcess currently requires local App Group RuntimeRoot for executable mapping
+          and does not have an independent USB security scope.
+          This build omits Apple's guest runtime and native Metal binaries; original
+          build-specific inputs and correct user-managed signing/provisioning are required.
+          The same build must be device-tested with USB and valid profiles.
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LiveSimBooter-USB-storage-unsigned-host
+          path: |
+            LiveSimBooter-USB-storage-unsigned.ipa
+            USB-LIMITATIONS.txt
+          if-no-files-found: error
+          retention-days: 14
