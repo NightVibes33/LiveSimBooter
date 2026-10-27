@@ -57,8 +57,8 @@ jobs:
           test -f "$extension/LiveProcess"
           xcrun lipo -archs "$app/LiveSimBooter" | grep -qw arm64
           xcrun lipo -archs "$extension/LiveProcess" | grep -qw arm64
-          /usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$app/Info.plist" | grep -q '^26\\.0$'
-          /usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$extension/Info.plist" | grep -q '^26\\.0$'
+          /usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$app/Info.plist" | grep -Fxq '26.0'
+          /usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$extension/Info.plist" | grep -Fxq '26.0'
 
           # Distribute no development signatures/profiles; installation requires user-side signing.
           codesign --remove-signature "$extension" 2>/dev/null || true
