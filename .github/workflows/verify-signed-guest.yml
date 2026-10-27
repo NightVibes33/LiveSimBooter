@@ -22,24 +22,31 @@ jobs:
         run: |
           set -euo pipefail
           keychain="$RUNNER_TEMP/lsb-ci-signing.keychain-db"
-          security create-keychain -p ci-password "$keychain"
-          security unlock-keychain -p ci-password "$keychain"
-          security set-keychain-settings -lut 7200 "$keychain"
+          limited_security() {
+            python3 - "$@" <<'PY'
+          import subprocess,sys
+          print("Keychain command:",sys.argv[1],flush=True)
+          subprocess.run(sys.argv[1:],check=True,timeout=45)
+          PY
+          }
+          limited_security security create-keychain -p ci-password "$keychain"
+          limited_security security unlock-keychain -p ci-password "$keychain"
+          limited_security security set-keychain-settings -lut 7200 "$keychain"
           openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 1 \
             -subj "/CN=LiveSimBooter CI Only/OU=Engineering/O=LiveSimBooter/C=US" \
             -addext 'extendedKeyUsage=codeSigning' \
             -keyout "$RUNNER_TEMP/ci.key" -out "$RUNNER_TEMP/ci.crt"
           openssl pkcs12 -export -legacy -inkey "$RUNNER_TEMP/ci.key" \
             -in "$RUNNER_TEMP/ci.crt" -out "$RUNNER_TEMP/ci.p12" -passout pass:ci-test
-          security import "$RUNNER_TEMP/ci.p12" -k "$keychain" -P ci-test -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
+          limited_security security import "$RUNNER_TEMP/ci.p12" -k "$keychain" -P ci-test -T /usr/bin/codesign
+          limited_security security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
             -k ci-password "$keychain"
-          security add-trusted-cert -d -r trustRoot -k "$keychain" "$RUNNER_TEMP/ci.crt"
-          security list-keychains -d user -s "$keychain"
-          security default-keychain -d user -s "$keychain"
+          limited_security security add-trusted-cert -d -r trustRoot -k "$keychain" "$RUNNER_TEMP/ci.crt"
+          limited_security security list-keychains -d user -s "$keychain"
+          limited_security security default-keychain -d user -s "$keychain"
           fingerprint="$(openssl x509 -in "$RUNNER_TEMP/ci.crt" -noout -fingerprint -sha1 | sed 's/^.*=//;s/://g')"
           printf '%s' "$fingerprint" > "$RUNNER_TEMP/lsb-ci-fingerprint"
-          security find-identity -v -p codesigning "$keychain"
+          limited_security security find-identity -v -p codesigning "$keychain"
           echo "CI certificate exists only in ephemeral runner; do NOT use for device installation."
       - name: Provision exact Apple simulator 26.0 build 23A343
         shell: bash
