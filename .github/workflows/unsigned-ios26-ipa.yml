@@ -1,0 +1,104 @@
+name: Build unsigned iOS 26 LiveSimBooter host IPA
+
+on:
+  push:
+    branches:
+      - codex/unsigned-ios26-ipa
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-unsigned-host:
+    runs-on: xcode-27
+    timeout-minutes: 45
+    steps:
+      - name: Check out project
+        uses: actions/checkout@v4
+
+      - name: Check Xcode and iPhoneOS SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+          xcodebuild -list -project LiveSimBooter.xcodeproj
+
+      - name: Build unsigned iOS device host and LiveProcess extension
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/live-sim-build"
+          if ! xcodebuild \
+            -project LiveSimBooter.xcodeproj \
+            -scheme LiveSimBooter \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/live-sim-build" \
+            ARCHS=arm64 \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            build > "$RUNNER_TEMP/xcodebuild.log" 2>&1; then
+            tail -n 180 "$RUNNER_TEMP/xcodebuild.log"
+            exit 1
+          fi
+          tail -n 30 "$RUNNER_TEMP/xcodebuild.log"
+
+      - name: Validate and package unsigned host IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$RUNNER_TEMP/live-sim-build/Build/Products/Release-iphoneos/LiveSimBooter.app"
+          extension="$app/PlugIns/LiveProcess.appex"
+          test -f "$app/LiveSimBooter"
+          test -f "$extension/LiveProcess"
+          xcrun lipo -archs "$app/LiveSimBooter" | grep -qw arm64
+          xcrun lipo -archs "$extension/LiveProcess" | grep -qw arm64
+          /usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$app/Info.plist" | grep -Fxq '26.0'
+          /usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$extension/Info.plist" | grep -Fxq '26.0'
+
+          # Distribute no development signatures/profiles; installation requires user-side signing.
+          codesign --remove-signature "$extension" 2>/dev/null || true
+          codesign --remove-signature "$app" 2>/dev/null || true
+          rm -f "$app/embedded.mobileprovision" "$extension/embedded.mobileprovision"
+          rm -rf "$app/_CodeSignature" "$extension/_CodeSignature"
+          if codesign --verify "$app" >/dev/null 2>&1; then
+            echo 'Expected an unsigned app, but signature verification succeeded.'
+            exit 1
+          fi
+          if codesign --verify "$extension" >/dev/null 2>&1; then
+            echo 'Expected an unsigned extension, but signature verification succeeded.'
+            exit 1
+          fi
+
+          mkdir -p "$RUNNER_TEMP/live-sim-package/Payload"
+          ditto "$app" "$RUNNER_TEMP/live-sim-package/Payload/LiveSimBooter.app"
+          (
+            cd "$RUNNER_TEMP/live-sim-package"
+            /usr/bin/zip -q -r -X "$GITHUB_WORKSPACE/LiveSimBooter-iOS26-unsigned.ipa" Payload
+          )
+          unzip -t "$GITHUB_WORKSPACE/LiveSimBooter-iOS26-unsigned.ipa" | tail -n 1
+          test -s "$GITHUB_WORKSPACE/LiveSimBooter-iOS26-unsigned.ipa"
+          cat > "$GITHUB_WORKSPACE/BUILD-NOTES.txt" <<'EOF'
+          LiveSimBooter native host / LiveProcess extension, unsigned arm64, iOS 26.0+.
+          This IPA is NOT a self-contained iOS Simulator or a verified working boot.
+          Apple iOS Simulator 26.0 build 23A343 runtime is not distributed here.
+          Required signed dyld cache, guest shim, guest apps/resources, and native Metal
+          backend libraries are not included. They must be prepared separately via
+          docs/agent-setup.md and NativeMetal/README.md.
+          Sign both host and extension with valid matching App Group and
+          increased-memory-limit capabilities/provisioning prior to device install.
+          EOF
+
+      - name: Publish unsigned host IPA and build notes
+        uses: actions/upload-artifact@v4
+        with:
+          name: LiveSimBooter-iOS26-unsigned-host
+          path: |
+            LiveSimBooter-iOS26-unsigned.ipa
+            BUILD-NOTES.txt
+          if-no-files-found: error
+          retention-days: 14
