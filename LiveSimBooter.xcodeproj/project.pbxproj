@@ -531,6 +531,7 @@
 					AVFoundation,
 					"-framework",
 					Security,
+					"-lz",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.kdt.LiveSimBooter;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -587,6 +588,7 @@
 					AVFoundation,
 					"-framework",
 					Security,
+					"-lz",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.kdt.LiveSimBooter;
 				PRODUCT_NAME = "$(TARGET_NAME)";
