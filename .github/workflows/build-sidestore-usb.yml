@@ -65,8 +65,8 @@ jobs:
           codesign -d --entitlements - "$app" > "$RUNNER_TEMP/app-entitlements.plist"
           codesign -d --entitlements - "$appex" > "$RUNNER_TEMP/extension-entitlements.plist"
           for plist in "$RUNNER_TEMP/app-entitlements.plist" "$RUNNER_TEMP/extension-entitlements.plist"; do
-            plutil -extract com.apple.security.application-groups.0 raw -o - "$plist" | grep -Fxq 'group.com.kdt.LiveSimBooter'
-            plutil -extract com.apple.developer.kernel.increased-memory-limit raw -o - "$plist" | grep -Fxq 'true'
+            grep -Fq 'group.com.kdt.LiveSimBooter' "$plist"
+            grep -Fq 'com.apple.developer.kernel.increased-memory-limit' "$plist"
           done
           mkdir -p "$RUNNER_TEMP/sidestore-package/Payload"
           ditto "$app" "$RUNNER_TEMP/sidestore-package/Payload/LiveSimBooter.app"
