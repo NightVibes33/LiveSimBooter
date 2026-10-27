@@ -1,0 +1,45 @@
+name: Inspect pinned iOS 26 simulator prerequisites
+
+on:
+  push:
+    branches:
+      - codex/unsigned-ios26-ipa
+    paths:
+      - .github/workflows/inspect-ios26-runtime.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: xcode-27
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect Xcode 27 host prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun simctl runtime list || true
+          xcrun --sdk iphonesimulator --show-sdk-path
+          df -h .
+          echo '--- volume roots ---'
+          ls -ld /Library/Developer/CoreSimulator/Volumes/* 2>/dev/null || true
+          echo '--- pinned runtime files ---'
+          candidate='/Library/Developer/CoreSimulator/Volumes/iOS_23A343/Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 26.0.simruntime/Contents/Resources/RuntimeRoot'
+          if [[ -f "$candidate/usr/lib/dyld_sim" ]]; then
+            echo 'PINNED_RUNTIME_PRESENT=yes'
+            ls -lh "$candidate/usr/lib/dyld_sim"
+            python3 Tools/setup-ios26-cache.py --runtime-root "$candidate" --validate-only > "$RUNNER_TEMP/ios26-cache-audit.json"
+            cat "$RUNNER_TEMP/ios26-cache-audit.json" | head -c 1800
+          else
+            echo 'PINNED_RUNTIME_PRESENT=no'
+          fi
+          echo
+          echo '--- signing identities (counts only) ---'
+          security find-identity -v -p codesigning | tail -n 1 || true
+          echo '--- checkout test capabilities ---'
+          test -e Tools/prepare-native-metal.py && echo 'PREPARE_NATIVE_METAL=yes'
+          test -e Tools/setup-ios26-cache-inputs.json && echo 'PINNED_MANIFEST=yes'
