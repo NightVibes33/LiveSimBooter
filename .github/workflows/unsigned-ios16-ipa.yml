@@ -1,0 +1,96 @@
+name: iOS 16 Unsigned IPA
+
+on:
+  push:
+    branches:
+      - build/ios16-unsigned-ipa
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-unsigned-ios16:
+    runs-on: xcode-27
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Build host and embedded LiveProcess for iOS 16
+        shell: bash
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project LiveSimBooter.xcodeproj \
+            -scheme LiveSimBooter \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/LiveSimBooterDerivedData" \
+            IPHONEOS_DEPLOYMENT_TARGET=16.0 \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=NO \
+            OTHER_CFLAGS="-march=armv8.3-a" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee "$RUNNER_TEMP/live-sim-booter-build.log"
+
+      - name: Validate and package unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/LiveSimBooterDerivedData/Build/Products/Release-iphoneos/LiveSimBooter.app"
+          EXT="$APP/PlugIns/LiveProcess.appex"
+          test -f "$APP/Info.plist"
+          test -f "$EXT/Info.plist"
+          test -f "$APP/LiveSimBooter"
+          test -f "$EXT/LiveProcess"
+          test ! -e "$APP/embedded.mobileprovision"
+          test ! -e "$EXT/embedded.mobileprovision"
+          python3 - "$APP" "$EXT" <<'PY'
+          import plistlib
+          import pathlib
+          import sys
+          for path in map(pathlib.Path, sys.argv[1:]):
+              with (path / "Info.plist").open("rb") as file:
+                  info = plistlib.load(file)
+              minimum = info.get("MinimumOSVersion")
+              if minimum is None or tuple(int(v) for v in minimum.split(".")) > (16, 0):
+                  raise SystemExit(f"{path.name} has invalid minimum OS: {minimum!r}")
+              print(f"{path.name}: minimum OS {minimum}; identifier {info.get('CFBundleIdentifier')}")
+          PY
+          mkdir -p dist/staging/Payload
+          ditto "$APP" dist/staging/Payload/LiveSimBooter.app
+          (
+            cd dist/staging
+            ditto -c -k --sequesterRsrc --keepParent Payload ../LiveSimBooter-iOS16-unsigned.ipa
+          )
+          unzip -t dist/LiveSimBooter-iOS16-unsigned.ipa
+          ls -lh dist/*.ipa
+
+      - name: Upload unsigned IPA
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: LiveSimBooter-iOS16-unsigned
+          path: dist/LiveSimBooter-iOS16-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload diagnostic build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: LiveSimBooter-iOS16-build-log
+          path: ${{ runner.temp }}/live-sim-booter-build.log
+          if-no-files-found: ignore
+          retention-days: 14
