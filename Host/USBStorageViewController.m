@@ -173,7 +173,10 @@ static NSString *const LSBUSBDownloadActiveKey = @"LSBUSBDownloadWasActiveV2";
     NSLog(@"[LiveSimBooter.USB] download stage=%@ active=%d", stage, active);
 }
 - (void)finishUSBDownload:(NSError *)error apple:(BOOL)apple {
-    NSAssert([NSThread isMainThread], @"Download completion must be on the main queue.");
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self finishUSBDownload:error apple:apple]; });
+        return;
+    }
     self.busy = NO;
     // A completed operation is not an interrupted download, even on error.
     [self downloadCheckpoint:error ? @"completed-with-error" : @"completed-successfully" active:NO];
@@ -188,7 +191,10 @@ static NSString *const LSBUSBDownloadActiveKey = @"LSBUSBDownloadWasActiveV2";
     [self.tableView reloadData];
 }
 - (void)beginDownloadOnUSB:(NSURL *)usb apple:(BOOL)apple {
-    NSAssert([NSThread isMainThread], @"UI download startup must begin on the main queue.");
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self beginDownloadOnUSB:usb apple:apple]; });
+        return;
+    }
     if (self.busy) return;
     self.busy = YES;
     self.status = apple ? @"Preparing Apple iOS 26 archive download…" : @"Preparing GitHub helper download…";
