@@ -241,7 +241,11 @@ static NSString *const LSBUSBDownloadActiveKey = @"LSBUSBDownloadWasActiveV2";
             dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
                 @autoreleasepool {
                     @try {
-                        [operation start];
+                        if (apple) {
+                            [(LSBAppleRuntimeDownloader *)operation start];
+                        } else {
+                            [(LSBRuntimeCacheInstaller *)operation start];
+                        }
                     } @catch (NSException *exception) {
                         NSError *failure = [LSBUSBStorageViewController storageError:
                             [NSString stringWithFormat:@"USB download startup rejected: %@", exception.reason ?: @"Unknown exception"]];
