@@ -13,6 +13,19 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - name: Confirm this build contains the USB download crash hardening
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Building LiveSimBooter revision $(git rev-parse HEAD)"
+          grep -Fq 'beginDownloadOnUSB:usb apple:YES' Host/USBStorageViewController.m
+          grep -Fq 'beginDownloadOnUSB:usb apple:NO' Host/USBStorageViewController.m
+          grep -Fq 'LSBUSBDownloadCheckpointKey' Host/USBStorageViewController.m
+          grep -Fq 'dispatch_get_global_queue(QOS_CLASS_UTILITY' Host/USBStorageViewController.m
+          if grep -Fq 'dispatch_async(dispatch_get_main_queue(), ^{ [self start]; });' Host/RuntimeCacheInstaller.m; then
+            echo "::error::Old main-thread helper startup still present"
+            exit 1
+          fi
       - name: Retrieve previously validated native Metal libraries
         uses: actions/download-artifact@v4
         with:
@@ -73,7 +86,7 @@ jobs:
           (cd "$RUNNER_TEMP/sidestore-package" && zip -q -r -X "$GITHUB_WORKSPACE/LiveSimBooter-USB-SideStore-adhoc.ipa" Payload)
           unzip -t "$GITHUB_WORKSPACE/LiveSimBooter-USB-SideStore-adhoc.ipa" | tail -n 1
           cat > "$GITHUB_WORKSPACE/INSTALL-NOTES.txt" <<'EOF'
-          SideStore build. Both host and LiveProcess contain ad-hoc (not Apple)
+          SideStore build includes USB download crash-hardening: deferred alert callbacks,\n          background USB scope startup, and last-stage recovery diagnostic.\n          Both host and LiveProcess contain ad-hoc (not Apple)
           signatures carrying the ORIGINAL requested App Group and increased
           memory entitlement. SideStore must replace BOTH signatures with
           valid Apple signatures and provisioned entitlements for the user's
