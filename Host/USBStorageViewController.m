@@ -10,6 +10,8 @@
 
 static NSString *const LSBUSBBookmarkKey = @"LSBUSBStorageDirectoryBookmarkV1";
 static NSString *const LSBUSBPackageName = @"LiveSimBooter-USB-23A343";
+static NSString *const LSBUSBDownloadCheckpointKey = @"LSBUSBLastDownloadCheckpointV2";
+static NSString *const LSBUSBDownloadActiveKey = @"LSBUSBDownloadWasActiveV2";
 
 @interface LSBUSBStorageViewController ()
 @property (nonatomic, copy) NSString *status;
@@ -34,6 +36,14 @@ static NSString *const LSBUSBPackageName = @"LiveSimBooter-USB-23A343";
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 56;
     [self refreshSelection];
+    if ([NSUserDefaults.standardUserDefaults boolForKey:LSBUSBDownloadActiveKey]) {
+        NSString *stage = [NSUserDefaults.standardUserDefaults stringForKey:LSBUSBDownloadCheckpointKey];
+        if (stage.length) {
+            self.status = [NSString stringWithFormat:@"%@\nPrevious download ended without completion. Last stage: %@. Check Settings → Privacy & Security → Analytics Data for LiveSimBooter crash reports.", self.status ?: @"", stage];
+            [self.tableView reloadData];
+        }
+        [NSUserDefaults.standardUserDefaults setBool:NO forKey:LSBUSBDownloadActiveKey];
+    }
 }
 
 - (NSURL *)selectedFolderWithError:(NSError **)error {
@@ -153,6 +163,88 @@ static NSString *const LSBUSBPackageName = @"LiveSimBooter-USB-23A343";
         });
     });
 }
+// Download startup is intentionally decoupled from UIAlertAction's dismissal
+// transaction. Every potentially blocking USB security-scope and file operation
+// runs on a background queue, not inside a UIKit animation callback.
+- (void)downloadCheckpoint:(NSString *)stage active:(BOOL)active {
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    [defaults setObject:stage ?: @"unknown" forKey:LSBUSBDownloadCheckpointKey];
+    [defaults setBool:active forKey:LSBUSBDownloadActiveKey];
+    NSLog(@"[LiveSimBooter.USB] download stage=%@ active=%d", stage, active);
+}
+- (void)finishUSBDownload:(NSError *)error apple:(BOOL)apple {
+    NSAssert(NSThread.isMainThread, @"Download completion must be on the main queue.");
+    self.busy = NO;
+    // A completed operation is not an interrupted download, even on error.
+    [self downloadCheckpoint:error ? @"completed-with-error" : @"completed-successfully" active:NO];
+    self.appleDownloader = nil;
+    self.cacheInstaller = nil;
+    self.status = error ? [NSString stringWithFormat:@"%@: %@",
+        apple ? @"Apple archive download failed" : @"Helper cache failed",
+        error.localizedDescription ?: @"Unknown error"] :
+        (apple ?
+         @"The original iOS 26.0 (23A343) Apple archive was verified on USB. It is not yet a bootable RuntimeRoot." :
+         @"LiveSimBooter helper cache downloaded and verified on USB. These helpers do not include the Apple simulator.");
+    [self.tableView reloadData];
+}
+- (void)beginDownloadOnUSB:(NSURL *)usb apple:(BOOL)apple {
+    NSAssert(NSThread.isMainThread, @"UI download startup must begin on the main queue.");
+    if (self.busy) return;
+    self.busy = YES;
+    self.status = apple ? @"Preparing Apple iOS 26 archive download…" : @"Preparing GitHub helper download…";
+    [self downloadCheckpoint:apple ? @"apple-confirmed" : @"helpers-confirmed" active:YES];
+    [self.tableView reloadData];
+    __weak typeof(self) weakSelf = self;
+    void (^progress)(NSString *) = ^(NSString *message) {
+        __strong typeof(weakSelf) current = weakSelf;
+        if (!current) return;
+        [current downloadCheckpoint:apple ? @"apple-network-or-storage" : @"helpers-network-or-storage" active:YES];
+        current.status = message ?: @"Download in progress…";
+        [current.tableView reloadData];
+    };
+    void (^completed)(NSError *) = ^(NSError *error) {
+        __strong typeof(weakSelf) current = weakSelf;
+        if (current) [current finishUSBDownload:error apple:apple];
+    };
+    // Delay construction until the alert has returned control to UIKit.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        __strong typeof(weakSelf) owner = weakSelf;
+        if (!owner || !owner.busy) return;
+        @try {
+            if (apple) {
+                owner.appleDownloader = [[LSBAppleRuntimeDownloader alloc]
+                    initWithUSBFolder:usb update:progress completion:completed];
+            } else {
+                owner.cacheInstaller = [[LSBRuntimeCacheInstaller alloc]
+                    initWithUSBFolder:usb update:progress completion:completed];
+            }
+            if ((apple && !owner.appleDownloader) || (!apple && !owner.cacheInstaller)) {
+                [owner finishUSBDownload:[LSBUSBStorageViewController storageError:@"Unable to initialize the download service."] apple:apple];
+                return;
+            }
+            [owner downloadCheckpoint:apple ? @"apple-start-dispatched" : @"helpers-start-dispatched" active:YES];
+            // Retain the operation independently of the UI while startAccessing
+            // security-scoped USB resources and opening files.
+            id operation = apple ? owner.appleDownloader : owner.cacheInstaller;
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                @autoreleasepool {
+                    @try {
+                        [operation start];
+                    } @catch (NSException *exception) {
+                        NSError *failure = [LSBUSBStorageViewController storageError:
+                            [NSString stringWithFormat:@"USB download startup rejected: %@", exception.reason ?: @"Unknown exception"]];
+                        // Don't risk double callbacks from a partly started URLSession.
+                        [operation cancel];
+                        NSLog(@"[LiveSimBooter.USB] startup exception: %@", failure.localizedDescription);
+                    }
+                }
+            });
+        } @catch (NSException *exception) {
+            [owner finishUSBDownload:[LSBUSBStorageViewController storageError:
+                [NSString stringWithFormat:@"Cannot start download: %@",exception.reason ?: @"Unknown exception"]] apple:apple];
+        }
+    });
+}
 - (void)startAppleRuntimeDownload {
     NSError *error = nil;
     NSURL *usb = [self selectedFolderWithError:&error];
@@ -163,37 +255,16 @@ static NSString *const LSBUSBPackageName = @"LiveSimBooter-USB-23A343";
     }
     __weak typeof(self) weakSelf = self;
     UIAlertController *confirm = [UIAlertController alertControllerWithTitle:@"Download Apple's iOS 26 simulator archive?"
-        message:@"The original ARM64 iOS Simulator 26.0 build 23A343 is about 7.99 GB. Download directly from Apple's CDN to USB with resume and SHA-256 verification. Apple's .aar archive does NOT directly boot in LiveSimBooter: decrypting, staging and code signing are separate unresolved requirements. Keep this app in the foreground and the drive attached."
+        message:@"The original ARM64 iOS Simulator 26.0 build 23A343 is about 7.99 GB. Download directly to the selected USB folder with HTTP range resume and SHA-256 verification. The raw .aar archive does not boot without preparation and signing."
         preferredStyle:UIAlertControllerStyleAlert];
     [confirm addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
     [confirm addAction:[UIAlertAction actionWithTitle:@"Download from Apple" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
         __strong typeof(weakSelf) owner = weakSelf;
-        if (!owner || owner.busy) return;
-        owner.busy = YES;
-        owner.status = @"Retrieving Apple iOS 26 simulator metadata…";
-        [owner.tableView reloadData];
-        owner.appleDownloader = [[LSBAppleRuntimeDownloader alloc] initWithUSBFolder:usb
-            update:^(NSString *message) {
-                __strong typeof(weakSelf) current = weakSelf;
-                if (!current) return;
-                current.status = message;
-                [current.tableView reloadData];
-            } completion:^(NSError *downloadError) {
-                __strong typeof(weakSelf) current = weakSelf;
-                if (!current) return;
-                current.busy = NO;
-                current.appleDownloader = nil;
-                current.status = downloadError ?
-                    [NSString stringWithFormat:@"Apple archive download failed: %@",downloadError.localizedDescription] :
-                    @"Original iOS 26.0 (23A343) Apple simulator .aar downloaded and SHA-256 verified on USB. This is NOT a bootable RuntimeRoot; preparation and signing remain necessary.";
-                [current.tableView reloadData];
-            }];
-        [owner.appleDownloader start];
+        if (owner) [owner beginDownloadOnUSB:usb apple:YES];
     }]];
     [self presentViewController:confirm animated:YES completion:nil];
 }
-
 - (void)startHelperDownload {
     NSError *error = nil;
     NSURL *usb = [self selectedFolderWithError:&error];
@@ -203,36 +274,16 @@ static NSString *const LSBUSBPackageName = @"LiveSimBooter-USB-23A343";
         return;
     }
     __weak typeof(self) weakSelf = self;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Download original LiveSimBooter helpers?"
-        message:@"Downloads the open-source guest helper cache only, compressed in small reusable pieces. It cannot install or boot Apple's missing iOS 26.0 runtime. Download directly to the selected USB drive?"
+    UIAlertController *confirm = [UIAlertController alertControllerWithTitle:@"Download LiveSimBooter helpers?"
+        message:@"Downloads the SHA-256-verified compressed open-source helpers from GitHub to USB. This does not include the Apple simulator runtime."
         preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Download" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+    [confirm addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [confirm addAction:[UIAlertAction actionWithTitle:@"Download" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
         __strong typeof(weakSelf) owner = weakSelf;
-        if (!owner || owner.busy) return;
-        owner.busy = YES;
-        owner.status = @"Connecting to GitHub helper cache…";
-        [owner.tableView reloadData];
-        owner.cacheInstaller = [[LSBRuntimeCacheInstaller alloc] initWithUSBFolder:usb
-            update:^(NSString *message) {
-                __strong typeof(weakSelf) current = weakSelf;
-                if (!current) return;
-                current.status = message;
-                [current.tableView reloadData];
-            } completion:^(NSError *cacheError) {
-                __strong typeof(weakSelf) current = weakSelf;
-                if (!current) return;
-                current.busy = NO;
-                current.cacheInstaller = nil;
-                current.status = cacheError ?
-                    [NSString stringWithFormat:@"Helper cache failed: %@", cacheError.localizedDescription] :
-                    @"LiveSimBooter helpers verified and stored on USB. These are NOT Apple's simulator and do not make the guest bootable.";
-                [current.tableView reloadData];
-            }];
-        [owner.cacheInstaller start];
+        if (owner) [owner beginDownloadOnUSB:usb apple:NO];
     }]];
-    [self presentViewController:alert animated:YES completion:nil];
+    [self presentViewController:confirm animated:YES completion:nil];
 }
 
 - (void)presentFolderPickerForImport:(BOOL)importing {
