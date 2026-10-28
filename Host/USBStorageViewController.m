@@ -16,6 +16,7 @@ static NSString *const LSBUSBDownloadActiveKey = @"LSBUSBDownloadWasActiveV2";
 @interface LSBUSBStorageViewController ()
 @property (nonatomic, copy) NSString *status;
 @property (nonatomic, copy) NSString *location;
+@property (nonatomic, copy) NSString *signedStorageDiagnostic;
 @property (nonatomic, assign) BOOL busy;
 @property (nonatomic, assign) BOOL importingPreparedRuntime;
 @property (nonatomic, strong) LSBRuntimeCacheInstaller *cacheInstaller;
@@ -35,6 +36,10 @@ static NSString *const LSBUSBDownloadActiveKey = @"LSBUSBDownloadWasActiveV2";
     [super viewDidLoad];
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 56;
+    // Signed entitlements cannot change while the process is running. Avoid
+    // repeated Security.framework dlopen / task lookups during every progress
+    // update and UITableView reload, especially on iOS developer betas.
+    self.signedStorageDiagnostic = LSBSharedStorageDiagnostic();
     [self refreshSelection];
     if ([NSUserDefaults.standardUserDefaults boolForKey:LSBUSBDownloadActiveKey]) {
         NSString *stage = [NSUserDefaults.standardUserDefaults stringForKey:LSBUSBDownloadCheckpointKey];
@@ -94,7 +99,7 @@ static NSString *const LSBUSBDownloadActiveKey = @"LSBUSBDownloadWasActiveV2";
 }
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     (void)tableView;
-    if (section == 0) return [NSString stringWithFormat:@"%@\n\n%@", self.status, LSBSharedStorageDiagnostic()];
+    if (section == 0) return [NSString stringWithFormat:@"%@\n\n%@", self.status ?: @"", self.signedStorageDiagnostic ?: @""];
     if (section == 1) return @"Download the original iOS 26.0 (23A343) ARM64 Apple simulator archive DIRECTLY from Apple’s CDN. Its ~8 GB .aar is NOT a prepared or bootable RuntimeRoot; decrypting, staging and signing are still required. GitHub provides only its manifest. Separately, fetch our open-source helper files from GitHub. "
            @"They are NOT a bootable Apple simulator; iOS 26.0 (23A343) still requires appropriately obtained, prepared and signed Apple runtime components. "
            @"Install resumes already verified chunks after interruption. Temporary chunks are deleted after each helper is installed. "
