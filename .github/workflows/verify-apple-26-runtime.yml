@@ -1,0 +1,135 @@
+name: Apple iOS 26 native runtime installation and boot verification
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/usb-runtime-storage
+    paths:
+      - '.github/workflows/verify-apple-26-runtime.yml'
+permissions:
+  contents: read
+
+jobs:
+  official-runtime:
+    runs-on: xcode-27
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Xcode and runner resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun simctl list runtimes
+          df -h "$RUNNER_TEMP"
+          free_kb="$(df -Pk "$RUNNER_TEMP" | awk 'NR==2{print $4}')"
+          if [ "$free_kb" -lt 26000000 ]; then
+            echo "::error::Requires at least 26 GB free for Apple's runtime download and installation."
+            exit 1
+          fi
+      - name: Download Apple iOS 26.0 runtime through Xcode (never upload Apple assets)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ios26-official"
+          # Use Xcode's MobileAsset installer/decryption, not an ad-hoc
+          # 'aa extract' against an encrypted .aar file.
+          xcodebuild -downloadPlatform iOS \
+            -exportPath "$RUNNER_TEMP/ios26-official" \
+            -buildVersion 26.0 -architectureVariant arm64
+          find "$RUNNER_TEMP/ios26-official" -maxdepth 2 -type f \
+            \( -name '*.dmg' -o -name '*.aar' \) -print
+      - name: Install authentic Apple runtime through xcodebuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="$(find "$RUNNER_TEMP/ios26-official" -maxdepth 3 -type f \
+            \( -name '*.dmg' -o -name '*.aar' \) -print -quit)"
+          if [ -z "$package" ]; then
+            echo "::error::Xcode did not export an installable runtime archive"
+            exit 1
+          fi
+          xcodebuild -importPlatform "$package"
+          xcrun simctl runtime scan-and-mount
+          xcrun simctl list runtimes
+          xcrun simctl list runtimes -j > "$RUNNER_TEMP/runtimes.json"
+          python3 - "$RUNNER_TEMP/runtimes.json" <<'PY'
+          import json,sys
+          runtimes=json.load(open(sys.argv[1]))['runtimes']
+          matched=[r for r in runtimes if r.get('version')=='26.0' and '23A343' in r.get('buildversion','')]
+          print('Matched actual Apple iOS 26.0 runtime:',matched)
+          if not matched:
+              raise SystemExit('iOS 26.0 23A343 did not install; no false boot success')
+          PY
+      - name: Validate exact 23A343 runtime source against LiveSimBooter toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Xcode performs decryption/mounting. Check that the *actual*
+          # original RuntimeRoot agrees with the patcher's pinned hashes.
+          root="$(find /Library/Developer/CoreSimulator/Volumes -type f \
+            -path '*/RuntimeRoot/usr/lib/dyld_sim' -print -quit 2>/dev/null | sed 's,/usr/lib/dyld_sim$,,' || true)"
+          if [ -z "$root" ]; then
+            root="$(find /Library/Developer/CoreSimulator/Profiles /Library/Developer/CoreSimulator/Volumes \
+              -type f -path '*/RuntimeRoot/usr/lib/dyld_sim' -print -quit 2>/dev/null | sed 's,/usr/lib/dyld_sim$,,' || true)"
+          fi
+          test -n "$root" || { echo "::error::Official 23A343 RuntimeRoot not mounted by Xcode"; exit 1; }
+          test -f "$root/sbin/launchd_sim"
+          test -f "$root/usr/lib/dyld_sim"
+          printf 'Xcode-provisioned simulator root: %s\n' "$root"
+          python3 Tools/setup-ios26-cache.py --runtime-root "$root" --validate-only \
+            > "$RUNNER_TEMP/lsb-cache-validation.json"
+          python3 Tools/setup-ios26-runtime.py --runtime-root "$root" --dry-run \
+            --allow-missing-dependencies > "$RUNNER_TEMP/lsb-runtime-inventory.json"
+          python3 - "$RUNNER_TEMP/lsb-cache-validation.json" "$RUNNER_TEMP/lsb-runtime-inventory.json" <<'PY'
+          import json,sys
+          for path in sys.argv[1:]:
+              data=json.load(open(path))
+              print(path.split('/')[-1], 'parsed successfully;',len(data),'root fields')
+          print('23A343 original inputs validated; no code signing or device boot implied')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: iOS26-source-validation-json-only
+          path: |
+            ${{ runner.temp }}/lsb-cache-validation.json
+            ${{ runner.temp }}/lsb-runtime-inventory.json
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Boot official iOS 26 via CoreSimulator (NOT LiveSimBooter nested guest)
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcrun simctl list devicetypes -j > "$RUNNER_TEMP/device-types.json"
+          python3 - "$RUNNER_TEMP/device-types.json" "$RUNNER_TEMP/runtimes.json" <<'PY'
+          import json,subprocess,sys
+          types=json.load(open(sys.argv[1]))['devicetypes']
+          available=[d for d in types if d.get('name')=='iPhone 16 Pro']
+          if not available:
+              available=[d for d in types if 'iPhone 16' in d.get('name','')]
+          if not available:
+              raise SystemExit('No compatible iPhone 16 device profile for iOS 26 test')
+          runtime=next(r['identifier'] for r in json.load(open(sys.argv[2]))['runtimes']
+              if r.get('version')=='26.0' and r.get('buildversion')=='23A343')
+          device_id=subprocess.check_output(
+              ['xcrun','simctl','create','LiveSimBooter-iOS26-Official-Runtime-Test',available[0]['identifier'],runtime],
+              text=True).strip()
+          print('Created Apple CoreSimulator device',device_id, flush=True)
+          try:
+              subprocess.run(['xcrun','simctl','boot',device_id],check=True,timeout=150)
+              subprocess.run(['xcrun','simctl','bootstatus',device_id,'-b'],check=True,timeout=480)
+              subprocess.run(['xcrun','simctl','spawn',device_id,'launchctl','list'],check=True,timeout=90)
+              print('PASS: Official iOS 26.0 CoreSimulator runtime boots.',flush=True)
+              print('NOT VERIFIED: LiveSimBooter nested guest on iPhone or on outer iOS Simulator.',flush=True)
+          finally:
+              subprocess.run(['xcrun','simctl','shutdown',device_id],timeout=90,check=False)
+              subprocess.run(['xcrun','simctl','delete',device_id],timeout=90,check=False)
+          PY
+      - name: Explain verification boundary
+        if: always()
+        shell: bash
+        run: |
+          echo "Official Apple iOS 26 runtime test is separate from LiveSimBooter's nested bootstrap."
+          echo "No Apple binaries, modified runtimes, private signing keys or compiled caches are published."
+          echo "Nested LiveSimBooter still requires a prepared, validly signed RuntimeRoot plus extension/USB mapping support."

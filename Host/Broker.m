@@ -1,5 +1,6 @@
 #import <Foundation/Foundation.h>
 #include "Broker.h"
+#import "SharedStorage.h"
 #include "ExtensionLauncher.h"
 #include "ChildMonitor.h"
 #include "RunningBoardMonitor.h"
@@ -1686,8 +1687,13 @@ static void handleMessage(LSBReceivedMessage *message) {
 
 static int prepareRuntimeRoot(void) {
     NSFileManager *manager = NSFileManager.defaultManager;
-    NSURL *group = [manager containerURLForSecurityApplicationGroupIdentifier:@LSB_APP_GROUP];
-    if (!group) { fprintf(stderr, "[broker] App Group entitlement/container unavailable: %s\n", LSB_APP_GROUP); return EACCES; }
+    NSString *authorizedIdentifier = nil;
+    NSURL *group = LSBSharedStorageContainerURL(&authorizedIdentifier);
+    if (!group) {
+        fprintf(stderr, "[broker] Shared runtime storage unavailable: %s\\n", LSBSharedStorageDiagnostic().UTF8String);
+        return EACCES;
+    }
+    fprintf(stderr, "[broker] Authorized App Group: %s\\n", authorizedIdentifier.UTF8String);
     runtimeRoot = [[group URLByAppendingPathComponent:@"RuntimeRoot" isDirectory:YES] path];
     NSString *oldRoot = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/RuntimeRoot"];
     if (![manager fileExistsAtPath:runtimeRoot] && [manager fileExistsAtPath:oldRoot]) {

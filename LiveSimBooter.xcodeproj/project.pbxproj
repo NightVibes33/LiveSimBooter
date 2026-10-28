@@ -90,6 +90,8 @@
 				MetalDisplayRenderer.m = "-fobjc-arc";
 				RunningBoardMonitor.m = "-fobjc-arc";
 				SettingsViewController.m = "-fobjc-arc";
+				SharedStorage.m = "-fobjc-arc";
+				USBStorageViewController.m = "-fobjc-arc";
 				SimulatorDisplayView.m = "-fobjc-arc";
 				TerminalSession.m = "-fobjc-arc";
 				TerminalView.m = "-fobjc-arc";
@@ -527,6 +529,9 @@
 					QuartzCore,
 					"-framework",
 					AVFoundation,
+					"-framework",
+					Security,
+					"-lz",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.kdt.LiveSimBooter;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -581,6 +586,9 @@
 					QuartzCore,
 					"-framework",
 					AVFoundation,
+					"-framework",
+					Security,
+					"-lz",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.kdt.LiveSimBooter;
 				PRODUCT_NAME = "$(TARGET_NAME)";

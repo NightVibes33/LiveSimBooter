@@ -295,9 +295,9 @@ DYLD_INSERT_LIBRARIES="$test_directory/libXPCWireCompatibility.dylib" XPC_FLAGS=
 xcrun --sdk macosx clang -fobjc-arc -fblocks -Wall -Wextra -Werror -arch arm64 -IProcessSupport -IHost \
     Tests/BrokerTests.m Host/SessionControlQueue.c Host/TerminalSession.m Host/LaunchdConfiguration.m ProcessSupport/LaunchdHandshake.c ProcessSupport/LaunchdProbe.c \
     Host/IndigoHIDServer.m Host/FramebufferServer.m Host/IOSurfaceServer.m ProcessSupport/LaunchdEndpoint.c \
-    Host/GuestEntitlementsConversion.m Host/DeviceType.m Host/DeviceConfiguration.m ProcessSupport/GuestEntitlements.c \
+    Host/GuestEntitlementsConversion.m Host/DeviceType.m Host/DeviceConfiguration.m Host/SharedStorage.m ProcessSupport/GuestEntitlements.c \
     ProcessSupport/FakePTY.c ProcessSupport/SpawnPlan.c ProcessSupport/ChildStatus.c ProcessSupport/NativeMetalControl.c \
-    -framework Foundation -framework IOSurface -o "$test_directory/Broker"
+    -framework Foundation -framework IOSurface -framework Security -o "$test_directory/Broker"
 "$test_directory/Broker"
 xcrun --sdk macosx clang -fobjc-arc -fblocks -Wall -Wextra -Werror -arch arm64 \
     Tests/IndigoHIDServerTests.m Host/IndigoHIDServer.m -framework Foundation -o "$test_directory/IndigoHIDServer"
@@ -378,3 +378,5 @@ xcrun --sdk macosx clang -fobjc-arc -fblocks -Wall -Wextra -Werror -arch arm64 \
 xcrun --sdk macosx clang -fobjc-arc -fblocks -Wall -Wextra -Werror -arch arm64 \
     Tests/RunningBoardMonitorTests.m -framework Foundation -o "$test_directory/RunningBoardMonitor"
 "$test_directory/RunningBoardMonitor"
+
+python3 -B Tests/VerifyDeviceRuntimeTests.py

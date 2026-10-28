@@ -1,0 +1,90 @@
+name: Diagnose Apple archive source and nested simulator boot
+on:
+  workflow_dispatch:
+  push:
+    branches: [feature/usb-runtime-storage]
+    paths:
+      - 'Host/AppleRuntimeDownloader.*'
+      - 'runtime-downloads/**'
+      - '.github/workflows/diagnose-nested-simulator.yml'
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: xcode-27
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate official Apple archive manifest and byte-range support
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,urllib.parse
+          m=json.load(open('runtime-downloads/ios26-23A343-arm64.json'))
+          assert m['build']=='23A343' and m['architecture']=='arm64'
+          assert urllib.parse.urlsplit(m['url']).hostname=='updates.cdn-apple.com'
+          assert len(m['sha256'])==64 and m['sizeBytes']>7_000_000_000
+          print('Pinned original iOS 26 archive reference:',m['sizeBytes'],m['sha256'])
+          PY
+          url="$(python3 -c "import json; print(json.load(open('runtime-downloads/ios26-23A343-arm64.json'))['url'])")"
+          # Transfer only the first KiB. Never pull Apple's 8GB runtime into
+          # GitHub artifacts, and never publish proprietary Apple binaries.
+          curl --fail --silent --show-error --location --max-time 90 \
+            --range 0-1023 --max-filesize 2048 --output "$RUNNER_TEMP/apple-first-kb.bin" \
+            --dump-header "$RUNNER_TEMP/apple-range.headers" "$url"
+          python3 - "$RUNNER_TEMP/apple-range.headers" "$RUNNER_TEMP/apple-first-kb.bin" <<'PY'
+          import pathlib,sys
+          text=pathlib.Path(sys.argv[1]).read_text(errors='replace')
+          print(text[-2500:])
+          data=pathlib.Path(sys.argv[2]).stat().st_size
+          assert data==1024, f"Server did not deliver exactly 1KiB: {data}"
+          assert "206 Partial Content" in text, "Apple CDN ignored Range"
+          print("Apple CDN verified HTTP byte ranges; full SHA-256 untested.")
+          PY
+      - name: Collect outer iOS simulator runtimes
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun simctl list runtimes
+          xcrun simctl list devices available
+      - name: Compile LiveSimBooter for the outer simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! xcodebuild -project LiveSimBooter.xcodeproj -scheme LiveSimBooter \
+              -configuration Debug -sdk iphonesimulator \
+              -destination 'generic/platform=iOS Simulator' \
+              -derivedDataPath "$RUNNER_TEMP/nested-sim" ARCHS=arm64 \
+              CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM="" \
+              build > "$RUNNER_TEMP/nested-sim-build.log" 2>&1; then
+            tail -n 100 "$RUNNER_TEMP/nested-sim-build.log"
+            echo "Outer simulator target cannot compile; nested guest boot is NOT verified."
+            exit 1
+          fi
+      - name: Attempt outer boot and LiveSimBooter host launch
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Requires an installed ARM64 simulator. We don't boot Apple's
+          # simulator by merely compiling the phone's IPA.
+          id="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next((dev["udid"] for a in d.values() for dev in a if dev["state"] == "Shutdown" and dev["isAvailable"]), ""))')"
+          test -n "$id" || { echo "No available outer simulator on runner"; exit 1; }
+          xcrun simctl boot "$id"
+          python3 - "$id" <<'PY'
+          import subprocess,sys
+          try:
+              subprocess.run(["xcrun","simctl","bootstatus",sys.argv[1],"-b"],check=True,timeout=150)
+          except subprocess.TimeoutExpired:
+              print("Outer CoreSimulator timed out after 150s; no nested guest boot proof.")
+              sys.exit(1)
+          PY
+          app="$RUNNER_TEMP/nested-sim/Build/Products/Debug-iphonesimulator/LiveSimBooter.app"
+          xcrun simctl install "$id" "$app"
+          xcrun simctl launch "$id" com.kdt.LiveSimBooter
+          # A host launch cannot establish a nested guest launch. The test
+          # must fail until an actual guest launchd_sim+SpringBoard boot is
+          # instrumented and positively observed.
+          echo "Outer simulator + host launched; nested iOS 26 guest boot remains UNVERIFIED."
+          exit 1

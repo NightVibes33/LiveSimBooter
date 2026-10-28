@@ -1,0 +1,165 @@
+name: Validate device-runtime signing pipeline (CI identity only)
+on:
+  workflow_dispatch:
+  push:
+    branches: [feature/usb-runtime-storage]
+    paths:
+      - '.github/workflows/verify-signed-guest.yml'
+      - 'Tools/sign-dyld-cache.py'
+      - 'Tools/sign-sim-executable.py'
+      - 'Tools/patch-ios26-container-metadata.py'
+      - 'Tools/patch-ios26-keyboard-haptics.py'
+permissions:
+  contents: read
+jobs:
+  cache-signature:
+    runs-on: xcode-27
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create disposable CI signing identity (NOT device-authorized)
+        shell: bash
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/lsb-ci-signing.keychain-db"
+          limited_security() {
+            python3 - "$@" <<'PY'
+          import subprocess,sys
+          print("Keychain command:",sys.argv[1],flush=True)
+          subprocess.run(sys.argv[1:],check=True,timeout=45)
+          PY
+          }
+          limited_security security create-keychain -p ci-password "$keychain"
+          limited_security security unlock-keychain -p ci-password "$keychain"
+          limited_security security set-keychain-settings -lut 7200 "$keychain"
+          openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 1 \
+            -subj "/CN=LiveSimBooter CI Only/OU=Engineering/O=LiveSimBooter/C=US" \
+            -addext 'keyUsage=critical,digitalSignature,keyCertSign,cRLSign' \
+            -addext 'basicConstraints=critical,CA:TRUE' \
+            -addext 'extendedKeyUsage=codeSigning' \
+            -keyout "$RUNNER_TEMP/ci.key" -out "$RUNNER_TEMP/ci.crt"
+          openssl pkcs12 -export -legacy -inkey "$RUNNER_TEMP/ci.key" \
+            -in "$RUNNER_TEMP/ci.crt" -out "$RUNNER_TEMP/ci.p12" -passout pass:ci-test
+          limited_security security import "$RUNNER_TEMP/ci.p12" -k "$keychain" -P ci-test -T /usr/bin/codesign
+          limited_security security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
+            -k ci-password "$keychain"
+          # Headless runner: avoid user-domain trust UI. The ephemeral system
+          # keychain is destroyed with this runner, and the cert is removed
+          # explicitly in the cleanup step.
+          limited_security sudo -n security add-trusted-cert -d -r trustRoot \
+            -k /Library/Keychains/System.keychain "$RUNNER_TEMP/ci.crt"
+          limited_security security list-keychains -d user -s "$keychain"
+          limited_security security default-keychain -d user -s "$keychain"
+          fingerprint="$(openssl x509 -in "$RUNNER_TEMP/ci.crt" -noout -fingerprint -sha1 | sed 's/^.*=//;s/://g')"
+          printf '%s' "$fingerprint" > "$RUNNER_TEMP/lsb-ci-fingerprint"
+          limited_security security find-identity -p codesigning "$keychain"
+          echo "CI certificate exists only in ephemeral runner; do NOT use for device installation."
+      - name: Provision exact Apple simulator 26.0 build 23A343
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/official"
+          xcodebuild -downloadPlatform iOS -exportPath "$RUNNER_TEMP/official" \
+            -buildVersion 26.0 -architectureVariant arm64
+          dmg="$(find "$RUNNER_TEMP/official" -maxdepth 4 -type f -name '*.dmg' -print -quit)"
+          test -n "$dmg"
+          xcodebuild -importPlatform "$dmg"
+          xcrun simctl runtime scan-and-mount
+          root="$(find /Library/Developer/CoreSimulator/Volumes -type f \
+            -path '*/RuntimeRoot/usr/lib/dyld_sim' -print -quit 2>/dev/null | sed 's,/usr/lib/dyld_sim$,,' || true)"
+          test -n "$root" && test -f "$root/sbin/launchd_sim"
+          printf '%s\n' "$root" > "$RUNNER_TEMP/lsb-root"
+      - name: Build exact relocated guest cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$(cat "$RUNNER_TEMP/lsb-root")"
+          python3 Tools/setup-ios26-cache.py --runtime-root "$root" \
+            --output-dir "$RUNNER_TEMP/cache" > "$RUNNER_TEMP/cache-result.json"
+      - name: Apply pinned cache metadata + haptics modifications
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/patched"
+          python3 Tools/patch-ios26-container-metadata.py \
+            --source "$RUNNER_TEMP/cache/unsigned/dyld_sim_shared_cache_arm64" \
+            --output "$RUNNER_TEMP/patched/metadata-cache" \
+            > "$RUNNER_TEMP/metadata-report.json"
+          python3 Tools/patch-ios26-keyboard-haptics.py \
+            --source "$RUNNER_TEMP/patched/metadata-cache" \
+            --output "$RUNNER_TEMP/patched/haptics-cache" \
+            > "$RUNNER_TEMP/haptics-report.json"
+      - name: CMS-sign cache and inspect validated on-disk layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/signed"
+          identity="$(cat "$RUNNER_TEMP/lsb-ci-fingerprint")"
+          python3 Tools/sign-dyld-cache.py "$RUNNER_TEMP/patched/haptics-cache" \
+            "$RUNNER_TEMP/signed/dyld_sim_shared_cache_arm64" \
+            --identity "$identity" --identifier com.kdt.LiveSimBooter \
+            --team CI-ONLY > "$RUNNER_TEMP/signed-cache-report.json"
+          python3 Tools/setup-ios26-cache.py --check-cache \
+            "$RUNNER_TEMP/signed/dyld_sim_shared_cache_arm64" \
+            > "$RUNNER_TEMP/signed-cache-layout.json"
+          python3 - <<'PY'
+          import json,os
+          folder=os.environ['RUNNER_TEMP']
+          signed=json.load(open(folder+'/signed-cache-report.json'))
+          layout=json.load(open(folder+'/signed-cache-layout.json'))
+          assert signed['sha256']==layout['sha256']
+          assert signed['code_page_size']==16384
+          assert signed['verified_code_pages']>0
+          print('PASS: ephemeral CMS cache signing and independently verified cache layout.')
+          print('NOT VERIFIED: Apple-provisioned developer signature or kernel acceptance on real iPhone.')
+          PY
+      - name: Patch loader + launchd and validate non-device signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$(cat "$RUNNER_TEMP/lsb-root")"
+          mkdir -p "$RUNNER_TEMP/loader" "$RUNNER_TEMP/patched-loader"
+          identity="$(cat "$RUNNER_TEMP/lsb-ci-fingerprint")"
+          python3 Tools/patch-ios26-cache-base.py \
+            --builder "$root/../update_dyld_sim_shared_cache" \
+            --dyld-sim "$root/usr/lib/dyld_sim" --output-dir "$RUNNER_TEMP/loader" \
+            > "$RUNNER_TEMP/loader-base.json"
+          python3 Tools/patch-ios26-platform.py \
+            --source "$RUNNER_TEMP/loader/dyld_sim" \
+            --output "$RUNNER_TEMP/patched-loader/dyld_sim" \
+            > "$RUNNER_TEMP/loader-platform.json"
+          python3 Tools/patch-ios26-launchd-identity.py \
+            --source "$root/sbin/launchd_sim" \
+            --output "$RUNNER_TEMP/patched-loader/launchd_sim" \
+            > "$RUNNER_TEMP/launchd-report.json"
+          codesign --force --sign "$identity" --timestamp=none "$RUNNER_TEMP/patched-loader/dyld_sim"
+          codesign --force --sign "$identity" --timestamp=none "$RUNNER_TEMP/patched-loader/launchd_sim"
+          codesign --verify --verbose=4 "$RUNNER_TEMP/patched-loader/dyld_sim"
+          codesign --verify --verbose=4 "$RUNNER_TEMP/patched-loader/launchd_sim"
+          echo "PASS: patched dyld_sim and launchd_sim code-sign for CI only."
+      - name: Upload JSON verification evidence only
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: signed-guest-structural-reports-only
+          path: |
+            ${{ runner.temp }}/cache-result.json
+            ${{ runner.temp }}/metadata-report.json
+            ${{ runner.temp }}/haptics-report.json
+            ${{ runner.temp }}/signed-cache-report.json
+            ${{ runner.temp }}/signed-cache-layout.json
+            ${{ runner.temp }}/loader-base.json
+            ${{ runner.temp }}/loader-platform.json
+            ${{ runner.temp }}/launchd-report.json
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Remove temporary signing identity
+        if: always()
+        shell: bash
+        run: |
+          if [ -f "$RUNNER_TEMP/ci.crt" ]; then
+            cert="$(openssl x509 -in "$RUNNER_TEMP/ci.crt" -noout -fingerprint -sha1 | sed 's/^.*=//;s/://g')"
+            sudo -n security delete-certificate -Z "$cert" /Library/Keychains/System.keychain || true
+          fi
+          security delete-keychain "$RUNNER_TEMP/lsb-ci-signing.keychain-db" || true
+          rm -f "$RUNNER_TEMP/ci.key" "$RUNNER_TEMP/ci.crt" "$RUNNER_TEMP/ci.p12" "$RUNNER_TEMP/lsb-ci-fingerprint"

@@ -1,0 +1,109 @@
+name: Build SideStore-ready USB IPA
+on:
+  push:
+    branches:
+      - feature/usb-runtime-storage
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Confirm this build contains the USB download crash hardening
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Building LiveSimBooter revision $(git rev-parse HEAD)"
+          grep -Fq 'beginDownloadOnUSB:usb apple:YES' Host/USBStorageViewController.m
+          grep -Fq 'beginDownloadOnUSB:usb apple:NO' Host/USBStorageViewController.m
+          grep -Fq 'LSBUSBDownloadCheckpointKey' Host/USBStorageViewController.m
+          grep -Fq 'dispatch_get_global_queue(QOS_CLASS_UTILITY' Host/USBStorageViewController.m
+          if grep -Fq 'dispatch_async(dispatch_get_main_queue(), ^{ [self start]; });' Host/RuntimeCacheInstaller.m; then
+            echo "::error::Old main-thread helper startup still present"
+            exit 1
+          fi
+      - name: Retrieve previously validated native Metal libraries
+        uses: actions/download-artifact@v4
+        with:
+          name: LiveSimBooter-iPhone16-iOS27-unsigned-native
+          run-id: 40577727513
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ runner.temp }}/lsb-original-native
+      - name: Compile updated iPhone 16 USB host and extension
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! xcodebuild -project LiveSimBooter.xcodeproj -scheme LiveSimBooter \
+            -configuration Release -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/sidestore-build" ARCHS=arm64 \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM="" build \
+            > "$RUNNER_TEMP/sidestore-xcodebuild.log" 2>&1; then
+            tail -n 120 "$RUNNER_TEMP/sidestore-xcodebuild.log"
+            exit 1
+          fi
+      - name: Embed native Metal and ad-hoc entitlement requests for SideStore
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$RUNNER_TEMP/sidestore-build/Build/Products/Release-iphoneos/LiveSimBooter.app"
+          appex="$app/PlugIns/LiveProcess.appex"
+          test -s "$app/LiveSimBooter"
+          test -s "$appex/LiveProcess"
+          orig="$RUNNER_TEMP/lsb-original-native/LiveSimBooter-iPhone16-iOS27-unsigned-native.ipa"
+          test -s "$orig"
+          mkdir -p "$RUNNER_TEMP/native-old"
+          (cd "$RUNNER_TEMP/native-old" && unzip -q "$orig")
+          libs="$RUNNER_TEMP/native-old/Payload/LiveSimBooter.app/PlugIns/LiveProcess.appex/Frameworks/NativeMetal"
+          test -s "$libs/MTLSimImplementation.dylib"
+          test -s "$libs/MetalSerializer.dylib"
+          test -s "$libs/MetalNativeProbe.dylib"
+          mkdir -p "$appex/Frameworks/NativeMetal"
+          cp "$libs/"*.dylib "$appex/Frameworks/NativeMetal/"
+          for lib in "$appex/Frameworks/NativeMetal/"*.dylib; do
+            xcrun lipo -archs "$lib" | grep -qw arm64
+            codesign --force --sign - "$lib"
+            codesign --verify "$lib"
+          done
+          # These are NOT Apple provisioning signatures. They preserve the
+          # exact requested capabilities for a provisioning-aware resigner.
+          codesign --force --sign - --entitlements LiveProcess/LiveProcess.entitlements "$appex"
+          codesign --force --sign - --entitlements LiveSimBooter/LiveSimBooter.entitlements "$app"
+          codesign --verify "$appex"
+          codesign --verify "$app"
+          codesign -d --entitlements - "$app" > "$RUNNER_TEMP/app-entitlements.plist"
+          codesign -d --entitlements - "$appex" > "$RUNNER_TEMP/extension-entitlements.plist"
+          for plist in "$RUNNER_TEMP/app-entitlements.plist" "$RUNNER_TEMP/extension-entitlements.plist"; do
+            grep -Fq 'group.com.kdt.LiveSimBooter' "$plist"
+            grep -Fq 'com.apple.developer.kernel.increased-memory-limit' "$plist"
+          done
+          mkdir -p "$RUNNER_TEMP/sidestore-package/Payload"
+          ditto "$app" "$RUNNER_TEMP/sidestore-package/Payload/LiveSimBooter.app"
+          (cd "$RUNNER_TEMP/sidestore-package" && zip -q -r -X "$GITHUB_WORKSPACE/LiveSimBooter-USB-SideStore-adhoc.ipa" Payload)
+          unzip -t "$GITHUB_WORKSPACE/LiveSimBooter-USB-SideStore-adhoc.ipa" | tail -n 1
+          cat > "$GITHUB_WORKSPACE/INSTALL-NOTES.txt" <<'EOF'
+          SideStore build includes USB download crash-hardening: deferred alert callbacks,\n          background USB scope startup, and last-stage recovery diagnostic.\n          Both host and LiveProcess contain ad-hoc (not Apple)
+          signatures carrying the ORIGINAL requested App Group and increased
+          memory entitlement. SideStore must replace BOTH signatures with
+          valid Apple signatures and provisioned entitlements for the user's
+          team; SideStore may map the group identifier during resigning.
+          Keep All Extensions and check that the extension is installed.
+          If signing grants NO App Groups entitlement, this build can still
+          launch its UI, but USB runtime transfers and guest boot will fail.
+          LiveSimBooter now reports the signed App Groups diagnostic. No
+          feature grants entitlements that iOS has not authorized.
+          USB store/restore is not direct USB execution; the signed prepared
+          iOS Simulator 26.0 23A343 runtime must be supplied separately.
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LiveSimBooter-USB-SideStore-adhoc
+          path: |
+            LiveSimBooter-USB-SideStore-adhoc.ipa
+            INSTALL-NOTES.txt
+          if-no-files-found: error
+          retention-days: 14

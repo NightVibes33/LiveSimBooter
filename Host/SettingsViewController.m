@@ -1,4 +1,5 @@
 #import "SettingsViewController.h"
+#import "USBStorageViewController.h"
 #import "BackgroundAudio.h"
 #import "GuestDisplaySettings.h"
 #import "GuestDeviceSettings.h"
@@ -206,9 +207,10 @@
     [_device refresh];
     if (!_device.pending) [_display refresh];
 }
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { (void)tableView; return 3; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { (void)tableView; return 4; }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     (void)tableView;
+    if (section == 3) return 1;
     if (section == 2) {
         LSBGuestDeviceType *type = LSBGuestDeviceTypeForIdentifier(_device.currentIdentifier);
         return type.hasHomeButton || type.isPad ? 2 : 1;
@@ -217,10 +219,11 @@
 }
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
     (void)tableView;
-    return section == 0 ? @"Background execution" : section == 1 ? @"Simulator display" : @"Simulator device";
+    return section == 0 ? @"Background execution" : section == 1 ? @"Simulator display" : section == 2 ? @"Simulator device" : @"Storage";
 }
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     (void)tableView;
+    if (section == 3) return @"Save a prepared runtime to a USB folder and restore it before boot. Full direct USB execution is not supported by the existing process loader.";
     if (section == 1) return _display.statusText;
     if (section == 2) {
         LSBGuestDeviceType *type = LSBGuestDeviceTypeForIdentifier(_device.currentIdentifier);
@@ -239,6 +242,14 @@
     UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:nil];
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
     cell.textLabel.numberOfLines = 0;
+    if (indexPath.section == 3) {
+        cell.textLabel.text = @"USB Runtime Storage";
+        cell.detailTextLabel.text = @"Store or restore…";
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+        cell.accessibilityIdentifier = @"usb-runtime-storage";
+        return cell;
+    }
     if (indexPath.section == 2 && indexPath.row == 1) {
         cell.textLabel.text = @"Use Full Width";
         UISwitch *toggle = [UISwitch new];
@@ -300,7 +311,9 @@
 }
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    if (indexPath.section == 1 && indexPath.row == 0 && !_device.pending)
+    if (indexPath.section == 3)
+        [self.navigationController pushViewController:[LSBUSBStorageViewController new] animated:YES];
+    else if (indexPath.section == 1 && indexPath.row == 0 && !_device.pending)
         [self.navigationController pushViewController:[LSBHUDSettingsViewController new] animated:YES];
     else if (indexPath.section == 2 && indexPath.row == 0)
         [self.navigationController pushViewController:[LSBDeviceTypePickerViewController new] animated:YES];

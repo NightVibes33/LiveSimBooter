@@ -1,0 +1,58 @@
+name: Publish original guest helper cache (no Apple binaries)
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/usb-runtime-storage
+    paths:
+      - 'Guest/**'
+      - 'ProcessSupport/**'
+      - 'Tools/build-*.sh'
+      - 'Tools/publish-helper-cache.py'
+      - '.github/workflows/publish-helper-cache.yml'
+permissions:
+  contents: write
+jobs:
+  cache:
+    if: github.repository == 'NightVibes33/LiveSimBooter'
+    runs-on: xcode-27
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile ONLY original LiveSimBooter guest helpers (arm64 simulator)
+        shell: bash
+        run: |
+          set -euo pipefail
+          dest="$RUNNER_TEMP/guest-helpers/RuntimeRoot"
+          mkdir -p "$dest/usr/lib" "$dest/usr/libexec" "$dest/bin"
+          sh Tools/build-spawn-shim.sh "$dest/usr/lib/libLiveSimSpawn.dylib" "$dest/bin/spawn-probe"
+          sh Tools/build-terminal-fish.sh "$dest/usr/libexec"
+          sh Tools/build-display-settings.sh "$dest/usr/libexec"
+          sh Tools/build-launchctl-control.sh "$dest/usr/libexec"
+          sh Tools/build-app-registration.sh "$dest/usr/libexec"
+          for bin in "$dest/usr/lib/"* "$dest/usr/libexec/"* "$dest/bin/"*; do
+            file "$bin"
+            xcrun lipo -archs "$bin" | grep -qw arm64
+          done
+      - name: gzip, split into 4 MiB pieces, SHA-256 verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 Tools/publish-helper-cache.py \
+            --input "$RUNNER_TEMP/guest-helpers/RuntimeRoot" \
+            --output "$RUNNER_TEMP/published-helper-cache"
+      - name: Publish cache files directly to generated GitHub branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Only the known public-domain/original helper output is copied.
+          # Never copy Apple simulation runtimes, SDKs or shared caches.
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git checkout --orphan runtime-cache-23A343
+          git rm -rf . >/dev/null || true
+          git clean -fdx
+          cp -R "$RUNNER_TEMP/published-helper-cache/." .
+          git add -A
+          git commit -m "Publish verified chunked helper cache for simulator 23A343"
+          git push --force origin HEAD:refs/heads/runtime-cache-23A343

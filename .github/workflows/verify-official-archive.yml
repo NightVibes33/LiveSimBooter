@@ -1,0 +1,58 @@
+name: Verify full Apple iOS 26 archive integrity (no redistribution)
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/usb-runtime-storage
+    paths:
+      - 'runtime-downloads/ios26-23A343-arm64.json'
+      - '.github/workflows/verify-official-archive.yml'
+permissions:
+  contents: read
+jobs:
+  verify-original:
+    runs-on: xcode-27
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check cache manifest and available disk space
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h "$RUNNER_TEMP"
+          python3 - <<'PY'
+          import json,shutil,urllib.parse
+          m=json.load(open('runtime-downloads/ios26-23A343-arm64.json'))
+          assert m['build']=='23A343'
+          assert m['architecture']=='arm64'
+          assert urllib.parse.urlparse(m['url']).hostname=='updates.cdn-apple.com'
+          assert m['sizeBytes']==7985954816
+          assert len(m['sha256'])==64
+          assert shutil.disk_usage('.').free > 11_000_000_000
+          print('Manifest pinned original Apple CDN asset and adequate space')
+          PY
+      - name: Download original archive and verify all bytes with SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="$(python3 -c 'import json;print(json.load(open("runtime-downloads/ios26-23A343-arm64.json"))["url"])')"
+          expected="$(python3 -c 'import json;print(json.load(open("runtime-downloads/ios26-23A343-arm64.json"))["sha256"])')"
+          expected_len="$(python3 -c 'import json;print(json.load(open("runtime-downloads/ios26-23A343-arm64.json"))["sizeBytes"])')"
+          archive="$RUNNER_TEMP/pinned-original-23A343.aar"
+          trap 'rm -f "$archive"' EXIT
+          curl --fail --location --show-error --silent \
+            --retry 3 --retry-all-errors --connect-timeout 60 \
+            --output "$archive" "$url"
+          actual_len="$(stat -f%z "$archive")"
+          test "$actual_len" = "$expected_len" || {
+            echo "::error::Apple archive byte length differs; rejecting pinned downloader manifest."
+            exit 1
+          }
+          actual="$(shasum -a 256 "$archive" | awk '{print $1}')"
+          test "$actual" = "$expected" || {
+            echo "::error::Apple archive SHA-256 differs; rejecting pinned downloader manifest."
+            echo "Expected $expected, measured $actual"
+            exit 1
+          }
+          echo "PASS: original Apple 23A343 .aar: $actual_len bytes, SHA-256 $actual"
+          echo "Deleted downloaded Apple archive; no binaries added to repository or artifacts"
