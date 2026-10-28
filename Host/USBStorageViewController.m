@@ -177,6 +177,7 @@ static NSString *const LSBUSBDownloadActiveKey = @"LSBUSBDownloadWasActiveV2";
         dispatch_async(dispatch_get_main_queue(), ^{ [self finishUSBDownload:error apple:apple]; });
         return;
     }
+    if (!self.busy) return; // Never surface two callbacks for a failed start/cancel race.
     self.busy = NO;
     // A completed operation is not an interrupted download, even on error.
     [self downloadCheckpoint:error ? @"completed-with-error" : @"completed-successfully" active:NO];
@@ -239,8 +240,11 @@ static NSString *const LSBUSBDownloadActiveKey = @"LSBUSBDownloadWasActiveV2";
                     } @catch (NSException *exception) {
                         NSError *failure = [LSBUSBStorageViewController storageError:
                             [NSString stringWithFormat:@"USB download startup rejected: %@", exception.reason ?: @"Unknown exception"]];
-                        // Don't risk double callbacks from a partly started URLSession.
-                        [operation cancel];
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            __strong typeof(weakSelf) current = weakSelf;
+                            if (current) [current finishUSBDownload:failure apple:apple];
+                        });
+                        [operation cancel]; // Cancel any partly created task and release USB scope.
                         NSLog(@"[LiveSimBooter.USB] startup exception: %@", failure.localizedDescription);
                     }
                 }
@@ -267,7 +271,13 @@ static NSString *const LSBUSBDownloadActiveKey = @"LSBUSBDownloadWasActiveV2";
     [confirm addAction:[UIAlertAction actionWithTitle:@"Download from Apple" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
         __strong typeof(weakSelf) owner = weakSelf;
-        if (owner) [owner beginDownloadOnUSB:usb apple:YES];
+        if (!owner) return;
+        // UIAlertController dismisses automatically; avoid reloading the
+        // table during its transition, which can destabilize UIKit on iOS betas.
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [owner beginDownloadOnUSB:usb apple:YES];
+        });
     }]];
     [self presentViewController:confirm animated:YES completion:nil];
 }
@@ -287,7 +297,13 @@ static NSString *const LSBUSBDownloadActiveKey = @"LSBUSBDownloadWasActiveV2";
     [confirm addAction:[UIAlertAction actionWithTitle:@"Download" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         (void)action;
         __strong typeof(weakSelf) owner = weakSelf;
-        if (owner) [owner beginDownloadOnUSB:usb apple:NO];
+        if (!owner) return;
+        // UIAlertController dismisses automatically; avoid reloading the
+        // table during its transition, which can destabilize UIKit on iOS betas.
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [owner beginDownloadOnUSB:usb apple:NO];
+        });
     }]];
     [self presentViewController:confirm animated:YES completion:nil];
 }
