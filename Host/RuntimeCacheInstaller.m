@@ -145,10 +145,8 @@ invalid:
 }
 
 - (void)start {
-    if (![NSThread isMainThread]) {
-        dispatch_async(dispatch_get_main_queue(), ^{ [self start]; });
-        return;
-    }
+    // Called from the controller's utility queue: never open external USB
+    // storage synchronously in a UIAlertAction or block the UIKit main loop.
     self.scoped = [self.folder startAccessingSecurityScopedResource];
     if (!self.scoped) { [self finish:LSBCacheError(@"USB folder permission was not granted. Select it again in Files.")]; return; }
     NSFileManager *fm = NSFileManager.defaultManager;
